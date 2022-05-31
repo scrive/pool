@@ -67,7 +67,7 @@ takeResource pool = mask_ $ do
                 , stripeNumber       = stripeId lp
                 , availableResources = 0
                 , acquisition        = Delayed
-                , acquisitionTime    = t1 - t2
+                , acquisitionTime    = t2 - t1
                 , creationTime       = Nothing
                 }
           pure (res, lp)
