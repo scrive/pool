@@ -85,8 +85,8 @@ takeResource pool = mask_ $ do
 -- Use 'newPool' instead.
 createPool :: IO a -> (a -> IO ()) -> Int -> NominalDiffTime -> Int -> IO (Pool a)
 createPool create free numStripes idleTime maxResources = newPool PoolConfig
-  { createResource = create
-  , freeResource   = free
-  , poolCacheTTL   = realToFrac idleTime
-  , poolCapacity   = numStripes * maxResources
+  { createResource   = create
+  , freeResource     = free
+  , poolCacheTTL     = realToFrac idleTime
+  , poolMaxResources = numStripes * maxResources
   }

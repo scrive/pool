@@ -63,7 +63,7 @@ data PoolConfig a = PoolConfig
   --
   -- /Note:/ the elapsed time before destroying a resource may be a little
   -- longer than requested, as the collector thread wakes at 1-second intervals.
-  , poolCapacity :: !Int
+  , poolMaxResources :: !Int
   -- ^ The maximum number of resources to keep open across all stripes. The
   -- smallest acceptable value is @1@.
   --
@@ -85,15 +85,15 @@ newPool :: PoolConfig a -> IO (Pool a)
 newPool pc = do
   when (poolCacheTTL pc < 0.5) $ do
     error "poolCacheTTL must be at least 0.5"
-  when (poolCapacity pc < 1) $ do
-    error "poolCapacity must be at least 1"
+  when (poolMaxResources pc < 1) $ do
+    error "poolMaxResources must be at least 1"
   numStripes <- getNumCapabilities
   when (numStripes < 1) $ do
     error "numStripes must be at least 1"
   pools <- fmap (smallArrayFromListN numStripes) . forM [1..numStripes] $ \n -> do
     ref <- newIORef ()
     stripe <- newMVar Stripe
-      { available = poolCapacity pc `quotCeil` numStripes
+      { available = poolMaxResources pc `quotCeil` numStripes
       , cache     = []
       , queue     = Empty
       , queueR    = Empty
