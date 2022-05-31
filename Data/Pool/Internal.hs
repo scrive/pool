@@ -58,7 +58,7 @@ data PoolConfig a = PoolConfig
   , freeResource :: !(a -> IO ())
     -- ^ The action that destroys an existing resource.
   , poolCacheTTL :: !Double
-  -- ^ The amount of seconds for which an unused resource is kept open. The
+  -- ^ The amount of seconds for which an unused resource is kept around. The
   -- smallest acceptable value is @0.5@.
   --
   -- /Note:/ the elapsed time before destroying a resource may be a little
