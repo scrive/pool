@@ -38,7 +38,7 @@ data Acquisition
   = Immediate
   -- ^ A resource was taken from the pool immediately.
   | Delayed
-  -- ^ The thread has to wait until a resource was released.
+  -- ^ The thread had to wait until a resource was released.
   deriving (Eq, Show, Generic)
 
 -- | 'Data.Pool.withResource' with introspection capabilities.
