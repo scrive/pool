@@ -10,6 +10,8 @@ module Data.Pool
     -- * Resource management
   , withResource
   , takeResource
+  , tryWithResource
+  , tryTakeResource
   , putResource
   , destroyResource
   , destroyAllResources
@@ -67,17 +69,29 @@ takeResource pool = mask_ $ do
         Nothing -> do
           a <- createResource (poolConfig pool) `onException` restoreSize (stripeVar lp)
           pure (a, lp)
-    else case cache stripe of
-      [] -> do
-        putMVar (stripeVar lp) $! stripe { available = available stripe - 1 }
-        a <- createResource (poolConfig pool) `onException` restoreSize (stripeVar lp)
-        pure (a, lp)
-      Entry a _ : as -> do
-        putMVar (stripeVar lp) $! stripe
-         { available = available stripe - 1
-         , cache = as
-         }
-        pure (a, lp)
+    else takeAvailableResource pool lp stripe
+
+-- | A variant of 'withResource' that doesn't execute the action and returns
+-- 'Nothing' instead of blocking if the capability-local pool is exhausted.
+tryWithResource :: Pool a -> (a -> IO r) -> IO (Maybe r)
+tryWithResource pool act = mask $ \unmask -> tryTakeResource pool >>= \case
+  Just (res, localPool) -> do
+    r <- unmask (act res) `onException` destroyResource pool localPool res
+    putResource localPool res
+    pure (Just r)
+  Nothing -> pure Nothing
+
+-- | A variant of 'takeResource' that returns 'Nothing' instead of blocking if
+-- the capability-local pool is exhausted.
+tryTakeResource :: Pool a -> IO (Maybe (a, LocalPool a))
+tryTakeResource pool = mask_ $ do
+  lp <- getLocalPool (localPools pool)
+  stripe <- takeMVar (stripeVar lp)
+  if available stripe == 0
+    then do
+      putMVar (stripeVar lp) stripe
+      pure Nothing
+    else Just <$> takeAvailableResource pool lp stripe
 
 {-# DEPRECATED createPool "Use newPool instead" #-}
 -- | Provided for compatibility with @resource-pool < 0.3@.
@@ -90,3 +104,23 @@ createPool create free numStripes idleTime maxResources = newPool PoolConfig
   , poolCacheTTL     = realToFrac idleTime
   , poolMaxResources = numStripes * maxResources
   }
+
+----------------------------------------
+-- Helpers
+
+takeAvailableResource
+  :: Pool a
+  -> LocalPool a
+  -> Stripe a
+  -> IO (a, LocalPool a)
+takeAvailableResource pool lp stripe = case cache stripe of
+  [] -> do
+    putMVar (stripeVar lp) $! stripe { available = available stripe - 1 }
+    a <- createResource (poolConfig pool) `onException` restoreSize (stripeVar lp)
+    pure (a, lp)
+  Entry a _ : as -> do
+    putMVar (stripeVar lp) $! stripe
+     { available = available stripe - 1
+     , cache = as
+     }
+    pure (a, lp)

@@ -11,6 +11,8 @@ module Data.Pool.Introspection
   , Acquisition(..)
   , withResource
   , takeResource
+  , tryWithResource
+  , tryTakeResource
   , putResource
   , destroyResource
   , destroyAllResources
@@ -84,32 +86,66 @@ takeResource pool = mask_ $ do
                 , creationTime       = Just $! t3 - t2
                 }
           pure (res, lp)
-    else case cache stripe of
-      [] -> do
-        let newAvailable = available stripe - 1
-        putMVar (stripeVar lp) $! stripe { available = newAvailable }
-        t2 <- getMonotonicTime
-        a  <- createResource (poolConfig pool) `onException` restoreSize (stripeVar lp)
-        t3 <- getMonotonicTime
-        let res = Resource
-              { resource           = a
-              , stripeNumber       = stripeId lp
-              , availableResources = newAvailable
-              , acquisition        = Immediate
-              , acquisitionTime    = t2 - t1
-              , creationTime       = Just $! t3 - t2
-              }
-        pure (res, lp)
-      Entry a _ : as -> do
-        let newAvailable = available stripe - 1
-        putMVar (stripeVar lp) $! stripe { available = newAvailable, cache = as }
-        t2 <- getMonotonicTime
-        let res = Resource
-              { resource           = a
-              , stripeNumber       = stripeId lp
-              , availableResources = newAvailable
-              , acquisition        = Immediate
-              , acquisitionTime    = t2 - t1
-              , creationTime       = Nothing
-              }
-        pure (res, lp)
+    else takeAvailableResource pool t1 lp stripe
+
+-- | A variant of 'withResource' that doesn't execute the action and returns
+-- 'Nothing' instead of blocking if the capability-local pool is exhausted.
+tryWithResource :: Pool a -> (Resource a -> IO r) -> IO (Maybe r)
+tryWithResource pool act = mask $ \unmask -> tryTakeResource pool >>= \case
+  Just (res, localPool) -> do
+    r <- unmask (act res) `onException` destroyResource pool localPool (resource res)
+    putResource localPool (resource res)
+    pure (Just r)
+  Nothing -> pure Nothing
+
+-- | A variant of 'takeResource' that returns 'Nothing' instead of blocking if
+-- the capability-local pool is exhausted.
+tryTakeResource :: Pool a -> IO (Maybe (Resource a, LocalPool a))
+tryTakeResource pool = mask_ $ do
+  t1 <- getMonotonicTime
+  lp <- getLocalPool (localPools pool)
+  stripe <- takeMVar (stripeVar lp)
+  if available stripe == 0
+    then do
+      putMVar (stripeVar lp) stripe
+      pure Nothing
+    else Just <$> takeAvailableResource pool t1 lp stripe
+
+----------------------------------------
+-- Helpers
+
+takeAvailableResource
+  :: Pool a
+  -> Double
+  -> LocalPool a
+  -> Stripe a
+  -> IO (Resource a, LocalPool a)
+takeAvailableResource pool t1 lp stripe = case cache stripe of
+  [] -> do
+    let newAvailable = available stripe - 1
+    putMVar (stripeVar lp) $! stripe { available = newAvailable }
+    t2 <- getMonotonicTime
+    a  <- createResource (poolConfig pool) `onException` restoreSize (stripeVar lp)
+    t3 <- getMonotonicTime
+    let res = Resource
+          { resource           = a
+          , stripeNumber       = stripeId lp
+          , availableResources = newAvailable
+          , acquisition        = Immediate
+          , acquisitionTime    = t2 - t1
+          , creationTime       = Just $! t3 - t2
+          }
+    pure (res, lp)
+  Entry a _ : as -> do
+    let newAvailable = available stripe - 1
+    putMVar (stripeVar lp) $! stripe { available = newAvailable, cache = as }
+    t2 <- getMonotonicTime
+    let res = Resource
+          { resource           = a
+          , stripeNumber       = stripeId lp
+          , availableResources = newAvailable
+          , acquisition        = Immediate
+          , acquisitionTime    = t2 - t1
+          , creationTime       = Nothing
+          }
+    pure (res, lp)
