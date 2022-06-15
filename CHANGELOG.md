@@ -1,4 +1,4 @@
-# resource-pool-0.3.1.0 (2022-06-??)
+# resource-pool-0.3.1.0 (2022-06-15)
 * Add `tryWithResource` and `tryTakeResource`.
 
 # resource-pool-0.3.0.0 (2022-06-01)
