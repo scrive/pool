@@ -61,7 +61,7 @@ takeResource pool = mask_ $ do
     then do
       q <- newEmptyMVar
       putMVar (stripeVar lp) $! stripe { queueR = Queue q (queueR stripe) }
-      waitForResource (stripeVar lp) q >>= \case
+      waitForResource (getPoolTimeoutConfig pool) (stripeVar lp) q >>= \case
         Just a -> do
           t2 <- getMonotonicTime
           let res = Resource
