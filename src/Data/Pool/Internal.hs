@@ -3,6 +3,7 @@
 -- This module is intended for internal use only, and may change without warning
 -- in subsequent releases.
 {-# OPTIONS_HADDOCK not-home #-}
+{-# LANGUAGE DeriveAnyClass #-}
 module Data.Pool.Internal where
 
 import Control.Concurrent
@@ -12,6 +13,7 @@ import Data.IORef
 import Data.Primitive.SmallArray
 import GHC.Clock
 import qualified Data.List as L
+import System.Timeout (timeout)
 
 -- | Striped resource pool based on "Control.Concurrent.QSem".
 --
@@ -23,6 +25,9 @@ data Pool a = Pool
   , localPools   :: !(SmallArray (LocalPool a))
   , reaperRef    :: !(IORef ())
   }
+
+getPoolTimeoutConfig :: Pool a -> Maybe TimeoutConfig 
+getPoolTimeoutConfig = poolTimeoutConfig . poolConfig
 
 -- | A single, capability-local pool.
 data LocalPool a = LocalPool
@@ -71,7 +76,19 @@ data PoolConfig a = PoolConfig
   -- capabilities and rounded up. Therefore the pool might end up creating up to
   -- @N - 1@ resources more in total than specified, where @N@ is the number of
   -- capabilities.
+  , poolTimeoutConfig :: Maybe TimeoutConfig
+  -- ^ Optional timeout for waiting for a resource
   }
+
+data TimeoutConfig = TimeoutConfig
+  { acquireResourceTimeout :: Int
+  -- ^ Time to await, microseconds
+  , timeoutLabel :: String 
+  -- ^ Label for TimeoutException
+  }
+
+newtype TimeoutException = TimeoutException String
+  deriving (Show, Exception)
 
 -- | Create a new striped resource pool.
 --
@@ -87,6 +104,8 @@ newPool pc = do
     error "poolCacheTTL must be at least 0.5"
   when (poolMaxResources pc < 1) $ do
     error "poolMaxResources must be at least 1"
+  when (maybe False (< 0) (acquireResourceTimeout <$> poolTimeoutConfig pc)) $ do
+    error "acquireResourceTimeout must be at least 0"
   numStripes <- getNumCapabilities
   when (numStripes < 1) $ do
     error "numStripes must be at least 1"
@@ -175,8 +194,8 @@ getLocalPool pools = do
   pure $ pools `indexSmallArray` (cid `rem` sizeofSmallArray pools)
 
 -- | Wait for the resource to be put into a given 'MVar'.
-waitForResource :: MVar (Stripe a) -> MVar (Maybe a) -> IO (Maybe a)
-waitForResource mstripe q = takeMVar q `onException` cleanup
+waitForResource :: Maybe TimeoutConfig -> MVar (Stripe a) -> MVar (Maybe a) -> IO (Maybe a)
+waitForResource timeoutConfig mstripe q = cutByTime (takeMVar q) `onException` cleanup
   where
     cleanup = uninterruptibleMask_ $ do -- Note [signal uninterruptible]
       stripe    <- takeMVar mstripe
@@ -192,6 +211,13 @@ waitForResource mstripe q = takeMVar q `onException` cleanup
           putMVar q $ error "unreachable"
           pure stripe
       putMVar mstripe newStripe
+    cutByTime = case timeoutConfig of 
+                  Just cfg -> timeout (acquireResourceTimeout cfg) >=> throwOnTimeout cfg
+                  Nothing -> id
+    throwOnTimeout cfg =
+      \case Just a -> pure a
+            Nothing -> throwIO $ TimeoutException (timeoutLabel cfg)
+
 
 -- | If an exception is received while a resource is being created, restore the
 -- original size of the stripe.

@@ -1,3 +1,6 @@
+# resource-pool-0.4.0.0 (2022-08-18)
+* Added optional timeout for resource acquiring
+
 # resource-pool-0.3.1.0 (2022-06-15)
 * Add `tryWithResource` and `tryTakeResource`.
 

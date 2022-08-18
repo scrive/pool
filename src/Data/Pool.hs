@@ -3,6 +3,8 @@
 module Data.Pool
   ( -- * Pool
     PoolConfig(..)
+  , TimeoutConfig(..)
+  , TimeoutException(..)
   , Pool
   , LocalPool
   , newPool
@@ -22,9 +24,9 @@ module Data.Pool
 
 import Control.Concurrent
 import Control.Exception
-import Data.Time (NominalDiffTime)
 
 import Data.Pool.Internal
+import Data.Time (NominalDiffTime)
 
 -- | Take a resource from the pool, perform an action with it and return it to
 -- the pool afterwards.
@@ -64,7 +66,7 @@ takeResource pool = mask_ $ do
     then do
       q <- newEmptyMVar
       putMVar (stripeVar lp) $! stripe { queueR = Queue q (queueR stripe) }
-      waitForResource (stripeVar lp) q >>= \case
+      waitForResource (getPoolTimeoutConfig pool) (stripeVar lp) q >>= \case
         Just a  -> pure (a, lp)
         Nothing -> do
           a <- createResource (poolConfig pool) `onException` restoreSize (stripeVar lp)
@@ -103,6 +105,7 @@ createPool create free numStripes idleTime maxResources = newPool PoolConfig
   , freeResource     = free
   , poolCacheTTL     = realToFrac idleTime
   , poolMaxResources = numStripes * maxResources
+  , poolTimeoutConfig = Nothing
   }
 
 ----------------------------------------
