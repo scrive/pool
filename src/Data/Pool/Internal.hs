@@ -195,7 +195,7 @@ getLocalPool pools = do
 
 -- | Wait for the resource to be put into a given 'MVar'.
 waitForResource :: Maybe TimeoutConfig -> MVar (Stripe a) -> MVar (Maybe a) -> IO (Maybe a)
-waitForResource timeoutConfig mstripe q = cutByTime (takeMVar q) `onException` cleanup
+waitForResource timeoutConfig mstripe q = limitByTime (takeMVar q) `onException` cleanup
   where
     cleanup = uninterruptibleMask_ $ do -- Note [signal uninterruptible]
       stripe    <- takeMVar mstripe
@@ -211,7 +211,7 @@ waitForResource timeoutConfig mstripe q = cutByTime (takeMVar q) `onException` c
           putMVar q $ error "unreachable"
           pure stripe
       putMVar mstripe newStripe
-    cutByTime = case timeoutConfig of 
+    limitByTime = case timeoutConfig of 
                   Just cfg -> timeout (acquireResourceTimeout cfg) >=> throwOnTimeout cfg
                   Nothing -> id
     throwOnTimeout cfg =
