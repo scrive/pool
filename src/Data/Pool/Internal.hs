@@ -109,7 +109,7 @@ newPool pc = do
             -- We can create more resources than stripes, so each stripe
             -- will have at least one resource.
             numStripesRequested
-  let (resourcesPerStripe, remainderStripe) =
+  let (resourcesPerStripe, finalStripeAmount) =
         case poolMaxResources pc `quotRem` numStripes of
           (perStripe, remainder) ->
             (,) perStripe $
@@ -132,10 +132,8 @@ newPool pc = do
       { available =
           if n == numStripes
           then
-          -- we are on the final stripe - use the remainder amount
-          remainderStripe
+          finalStripeAmount
           else
-          -- we are not on the final stripe - use the common amount
           resourcesPerStripe
       , cache     = []
       , queue     = Empty
