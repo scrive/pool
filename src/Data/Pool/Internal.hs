@@ -3,6 +3,8 @@
 -- This module is intended for internal use only, and may change without warning
 -- in subsequent releases.
 {-# OPTIONS_HADDOCK not-home #-}
+
+{-# OPTIONS_GHC -Werror #-}
 module Data.Pool.Internal where
 
 import Control.Concurrent
@@ -67,11 +69,10 @@ data PoolConfig a = PoolConfig
   -- ^ The maximum number of resources to keep open across all stripes. The
   -- smallest acceptable value is @1@.
   --
-  -- /Note:/ for each stripe the number of resources is divided by the number of
-  -- capabilities and rounded up. Therefore the pool might end up creating up to
-  -- @N - 1@ resources more in total than specified, where @N@ is the number of
-  -- capabilities. If you need to control this more precisely, set
-  -- 'poolNumStripes' to 'Just' the number of stripes you need.
+  -- /Note/: Each stripe will try to have an equal amount of resources per
+  -- stripe. If the number of resources does not evenly divide into the
+  -- stripes, then one stripe will only have the remainder. For example,
+  -- with 10 max resources and 4 stripes, we'll have 2 stripes with 4
   , poolNumStripes :: !(Maybe Int)
   -- ^ The number of stripes to create. If 'Nothing' is provided, then this
   -- will use 'getNumCapabilities'.
@@ -99,49 +100,29 @@ newPool pc = do
   numStripesRequested <- maybe getNumCapabilities pure (poolNumStripes pc)
   when (numStripesRequested < 1) $ do
     error "numStripes must be at least 1"
-  let numStripes
-        | poolMaxResources pc < numStripesRequested =
-            -- If we have fewer maximum resources than stripes, then we
-            -- cannot have that many stripes each with one resource. This
-            -- caps the number of stripes to the number of resources.
-            poolMaxResources pc
-        | otherwise =
-            -- We can create more resources than stripes, so each stripe
-            -- will have at least one resource.
-            numStripesRequested
-  let (resourcesPerStripe, finalStripeAmount) =
-        case poolMaxResources pc `quotRem` numStripes of
-          (perStripe, remainder) ->
-            (,) perStripe $
-              if remainder == 0
-              then
-              -- If we have `remainder` of 0, then the number of resources
-              -- divides evenly into the number of stripes, so we want
-              -- the final stripe to contain the same amount of
-              -- resources.
-              perStripe
-              else
-              -- If it does not divide evenly, then the final stripe
-              -- can only contain the remainder, instead of a full
-              -- amount.
-              remainder
+  let stripeResourceAllocation =
+        howManyStripes Input
+          { inputMaxResources = poolMaxResources pc
+          , inputStripes = numStripesRequested
+          }
+      stripeAllocations =
+        robin stripeResourceAllocation
+      allocationWithIndex =
+        zip [1..] stripeAllocations
+      numStripes =
+        allowedStripes stripeResourceAllocation
 
-  pools <- fmap (smallArrayFromListN numStripes) . forM [1..numStripes] $ \n -> do
+  pools <- fmap (smallArrayFromListN numStripes) . forM allocationWithIndex $ \(n, i) -> do
     ref <- newIORef ()
     stripe <- newMVar Stripe
-      { available =
-          if n == numStripes
-          then
-          finalStripeAmount
-          else
-          resourcesPerStripe
+      { available = n
       , cache     = []
       , queue     = Empty
       , queueR    = Empty
       }
     -- When the local pool goes out of scope, free its resources.
     void . mkWeakIORef ref $ cleanStripe (const True) (freeResource pc) stripe
-    pure LocalPool { stripeId   = n
+    pure LocalPool { stripeId   = i
                    , stripeVar  = stripe
                    , cleanerRef = ref
                    }
@@ -163,6 +144,42 @@ newPool pc = do
       now <- getMonotonicTime
       let isStale e = now - lastUsed e > poolCacheTTL pc
       mapM_ (cleanStripe isStale (freeResource pc) . stripeVar) pools
+
+-- | A datatype representing the requested maximum resources and count of
+-- stripes. We don't use these figurs directly, but instead calculate  a
+data Input = Input { inputMaxResources :: !Int, inputStripes :: !Int }
+  deriving Show
+
+data StripeResourceAllocation = StripeResourceAllocation { poolInput :: !Input, allowedStripes :: !Int }
+  deriving Show
+
+-- | Determine how many resources should be allocated to each stripe.
+--
+-- The output list contains a single `Int` per stripe, with the 'Int'
+-- representing the amount of resources available to that stripe.
+robin :: StripeResourceAllocation -> [Int]
+robin stripeResourceAllocation = do
+  let counts = replicate (allowedStripes stripeResourceAllocation) 0
+  go (inputMaxResources (poolInput stripeResourceAllocation)) [] counts
+  where
+    go remainingResources done todo = do
+      if remainingResources > 0
+      then
+        case todo of
+          [] ->
+            go remainingResources [] done
+          (r : rs) -> do
+            go (remainingResources - 1) (r + 1 : done) rs
+      else done ++ todo
+
+howManyStripes :: Input -> StripeResourceAllocation
+howManyStripes inp = StripeResourceAllocation
+  { allowedStripes =
+      if inputStripes inp > inputMaxResources inp
+      then inputMaxResources inp
+      else inputStripes inp
+  , poolInput = inp
+  }
 
 -- | Destroy a resource.
 --
