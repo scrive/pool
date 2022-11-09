@@ -70,7 +70,16 @@ data PoolConfig a = PoolConfig
   -- /Note:/ for each stripe the number of resources is divided by the number of
   -- capabilities and rounded up. Therefore the pool might end up creating up to
   -- @N - 1@ resources more in total than specified, where @N@ is the number of
-  -- capabilities.
+  -- capabilities. If you need to control this more precisely, set
+  -- 'poolNumStripes' to 'Just' the number of stripes you need.
+  , poolNumStripes :: !(Maybe Int)
+  -- ^ The number of stripes to create. If 'Nothing' is provided, then this
+  -- will use 'getNumCapabilities'.
+  --
+  -- The resource count in 'poolMaxResources' will be split evenly among
+  -- the available stripes. Each stripe will contain at least one resource,
+  -- so if you have more stripes than resources, then you will exceed the
+  -- 'poolMaxResources'.
   }
 
 -- | Create a new striped resource pool.
@@ -87,7 +96,7 @@ newPool pc = do
     error "poolCacheTTL must be at least 0.5"
   when (poolMaxResources pc < 1) $ do
     error "poolMaxResources must be at least 1"
-  numStripes <- getNumCapabilities
+  numStripes <- maybe getNumCapabilities pure (poolNumStripes pc)
   when (numStripes < 1) $ do
     error "numStripes must be at least 1"
   pools <- fmap (smallArrayFromListN numStripes) . forM [1..numStripes] $ \n -> do
