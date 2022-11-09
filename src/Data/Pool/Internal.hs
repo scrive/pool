@@ -71,8 +71,7 @@ data PoolConfig a = PoolConfig
   --
   -- /Note/: Each stripe will try to have an equal amount of resources per
   -- stripe. If the number of resources does not evenly divide into the
-  -- stripes, then one stripe will only have the remainder. For example,
-  -- with 10 max resources and 4 stripes, we'll have 2 stripes with 4
+  -- stripes, then some stripes will have fewer resources.
   , poolNumStripes :: !(Maybe Int)
   -- ^ The number of stripes to create. If 'Nothing' is provided, then this
   -- will use 'getNumCapabilities'.
