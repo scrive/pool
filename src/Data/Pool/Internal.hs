@@ -96,13 +96,43 @@ newPool pc = do
     error "poolCacheTTL must be at least 0.5"
   when (poolMaxResources pc < 1) $ do
     error "poolMaxResources must be at least 1"
-  numStripes <- maybe getNumCapabilities pure (poolNumStripes pc)
-  when (numStripes < 1) $ do
+  numStripesRequested <- maybe getNumCapabilities pure (poolNumStripes pc)
+  when (numStripesRequested < 1) $ do
     error "numStripes must be at least 1"
+  let numStripes
+        | poolMaxResources pc < numStripesRequested =
+            -- If we have fewer maximum resources than stripes, then we
+            -- cannot have that many stripes each with one resource. This
+            -- caps the number of stripes to the number of resources.
+            poolMaxResources pc
+        | otherwise =
+            -- We can create more resources than stripes, so each stripe
+            -- will have at least one resource.
+            numStripesRequested
+  let (resourcesPerStripe, remainderStripe) =
+        let (perStripe, remainder) =
+              poolMaxResources pc `quotRem` numStripes
+            finalStripeResources
+              | remainder == 0 =
+                  -- If we have `remainder` of 0, then the number of resources
+                  -- divides evenly into the number of stripes.
+                  perStripe
+              | otherwise =
+                  remainder
+        in
+          (perStripe, finalStripeResources)
+
   pools <- fmap (smallArrayFromListN numStripes) . forM [1..numStripes] $ \n -> do
     ref <- newIORef ()
     stripe <- newMVar Stripe
-      { available = poolMaxResources pc `quotCeil` numStripes
+      { available =
+          if n == numStripes
+          then
+          -- we are on the final stripe - use the remainder amount
+          remainderStripe
+          else
+          -- we are not on the final stripe - use the common amount
+          resourcesPerStripe
       , cache     = []
       , queue     = Empty
       , queueR    = Empty
@@ -125,11 +155,6 @@ newPool pc = do
               , reaperRef  = ref
               }
   where
-    quotCeil :: Int -> Int -> Int
-    quotCeil x y =
-      -- Basically ceiling (x / y) without going through Double.
-      let (z, r) = x `quotRem` y in if r == 0 then z else z + 1
-
     -- Collect stale resources from the pool once per second.
     collector pools = forever $ do
       threadDelay 1000000
