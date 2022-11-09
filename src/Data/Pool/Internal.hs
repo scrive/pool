@@ -110,17 +110,21 @@ newPool pc = do
             -- will have at least one resource.
             numStripesRequested
   let (resourcesPerStripe, remainderStripe) =
-        let (perStripe, remainder) =
-              poolMaxResources pc `quotRem` numStripes
-            finalStripeResources
-              | remainder == 0 =
-                  -- If we have `remainder` of 0, then the number of resources
-                  -- divides evenly into the number of stripes.
-                  perStripe
-              | otherwise =
-                  remainder
-        in
-          (perStripe, finalStripeResources)
+        case poolMaxResources pc `quotRem` numStripes of
+          (perStripe, remainder) ->
+            (,) perStripe $
+              if remainder == 0
+              then
+              -- If we have `remainder` of 0, then the number of resources
+              -- divides evenly into the number of stripes, so we want
+              -- the final stripe to contain the same amount of
+              -- resources.
+              perStripe
+              else
+              -- If it does not divide evenly, then the final stripe
+              -- can only contain the remainder, instead of a full
+              -- amount.
+              remainder
 
   pools <- fmap (smallArrayFromListN numStripes) . forM [1..numStripes] $ \n -> do
     ref <- newIORef ()
