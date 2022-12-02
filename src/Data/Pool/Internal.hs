@@ -106,22 +106,22 @@ newPool pc = do
           }
       stripeAllocations =
         robin stripeResourceAllocation
-      allocationWithIndex =
+      indexedAllocations =
         zip [1..] stripeAllocations
       numStripes =
         allowedStripes stripeResourceAllocation
 
-  pools <- fmap (smallArrayFromListN numStripes) . forM allocationWithIndex $ \(n, i) -> do
+  pools <- fmap (smallArrayFromListN numStripes) . forM indexedAllocations $ \(index, allocation) -> do
     ref <- newIORef ()
     stripe <- newMVar Stripe
-      { available = n
+      { available = allocation
       , cache     = []
       , queue     = Empty
       , queueR    = Empty
       }
     -- When the local pool goes out of scope, free its resources.
     void . mkWeakIORef ref $ cleanStripe (const True) (freeResource pc) stripe
-    pure LocalPool { stripeId   = i
+    pure LocalPool { stripeId   = index
                    , stripeVar  = stripe
                    , cleanerRef = ref
                    }
