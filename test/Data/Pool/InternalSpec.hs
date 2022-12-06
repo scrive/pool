@@ -14,15 +14,15 @@ spec = do
   describe "howManyStripes" $ do
     it "has one stripe per resource" $ hedgehog $ do
       input@Input {..} <- forAll inputs
-      let StripeResourceAllocation {allowedStripes = numStripes} = howManyStripes input
+      let allocation = howManyStripes input
       -- actual stripes may be at most requested stripes
       if inputStripes >= inputMaxResources
         then do
           label "More stripes than resources"
         else do
           label "Fewer stripes than resources"
-          inputStripes === numStripes
-      diff numStripes (<=) inputStripes
+          inputStripes === allowedStripes allocation
+      diff (allowedStripes allocation) (<=) inputStripes
 
   describe "robin" $ do
     it "sum of resources is always equal to input" $ hedgehog $ do
