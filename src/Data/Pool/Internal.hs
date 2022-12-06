@@ -157,19 +157,15 @@ data StripeResourceAllocation = StripeResourceAllocation { poolInput :: !Input, 
 -- The output list contains a single `Int` per stripe, with the 'Int'
 -- representing the amount of resources available to that stripe.
 robin :: StripeResourceAllocation -> [Int]
-robin stripeResourceAllocation = do
-  let counts = replicate (allowedStripes stripeResourceAllocation) 0
-  go (inputMaxResources (poolInput stripeResourceAllocation)) [] counts
-  where
-    go remainingResources done todo = do
-      if remainingResources > 0
-      then
-        case todo of
-          [] ->
-            go remainingResources [] done
-          (r : rs) -> do
-            go (remainingResources - 1) (r + 1 : done) rs
-      else done ++ todo
+robin stripeResourceAllocation =
+  let
+    numStripes =
+      allowedStripes stripeResourceAllocation
+    (baseCount, remainder) =
+      inputMaxResources (poolInput stripeResourceAllocation)
+        `divMod` numStripes
+  in
+    replicate remainder (baseCount + 1) ++ replicate (numStripes - remainder) baseCount
 
 howManyStripes :: Input -> StripeResourceAllocation
 howManyStripes inp = StripeResourceAllocation
