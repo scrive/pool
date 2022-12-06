@@ -52,8 +52,11 @@ test-suite tests
   build-depends: 
     base
     , hedgehog
+    , hspec
+    , hspec-hedgehog
     , resource-pool
   ghc-options: -Wall -Wcompat
+  build-tool-depends: hspec-discover:hspec-discover
 
   default-language: Haskell2010
 
@@ -62,3 +65,5 @@ test-suite tests
                     , RankNTypes
                     , TypeApplications
 
+  other-modules: 
+    Data.Pool.InternalSpec
