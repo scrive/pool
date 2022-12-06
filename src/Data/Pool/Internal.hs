@@ -4,7 +4,6 @@
 -- in subsequent releases.
 {-# OPTIONS_HADDOCK not-home #-}
 
-{-# OPTIONS_GHC -Werror #-}
 module Data.Pool.Internal where
 
 import Control.Concurrent
@@ -71,15 +70,14 @@ data PoolConfig a = PoolConfig
   --
   -- /Note/: Each stripe will try to have an equal amount of resources per
   -- stripe. If the number of resources does not evenly divide into the
-  -- stripes, then some stripes will have fewer resources.
+  -- stripes, then some stripes will have one fewer resource than others.
   , poolNumStripes :: !(Maybe Int)
-  -- ^ The number of stripes to create. If 'Nothing' is provided, then this
+  -- ^ The maximum number of stripes to create. If 'Nothing' is provided, then this
   -- will use 'getNumCapabilities'.
   --
   -- The resource count in 'poolMaxResources' will be split evenly among
-  -- the available stripes. Each stripe will contain at least one resource,
-  -- so if you have more stripes than resources, then you will exceed the
-  -- 'poolMaxResources'.
+  -- the available stripes. If there are fewer stripes than resources, then
+  -- this will only create as many stripes as resources.
   }
 
 -- | Create a new striped resource pool.
