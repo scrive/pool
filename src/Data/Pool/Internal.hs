@@ -11,6 +11,7 @@ import Control.Monad
 import Data.Hashable (hash)
 import Data.IORef
 import Data.Primitive.SmallArray
+import Data.Traversable
 import GHC.Clock
 import qualified Data.List as L
 
@@ -282,3 +283,11 @@ reverseQueue = go Empty
     go acc = \case
       Empty      -> acc
       Queue x xs -> go (Queue x acc) xs
+
+-- | For diagnostic and test use.
+poolAvailableResources :: Pool a -> IO Int
+poolAvailableResources pool = do
+  avails <- for (localPools pool) $ \localPool -> do
+    stripe <- readMVar (stripeVar localPool)
+    pure (available stripe)
+  pure $! sum avails
