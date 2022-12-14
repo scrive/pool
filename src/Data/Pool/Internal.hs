@@ -142,11 +142,24 @@ newPool pc = do
       mapM_ (cleanStripe isStale (freeResource pc) . stripeVar) pools
 
 -- | A datatype representing the requested maximum resources and count of
--- stripes. We don't use these figurs directly, but instead calculate  a
-data Input = Input { inputMaxResources :: !Int, inputStripes :: !Int }
+-- stripes. We don't use these figures directly, but instead calculate
+-- a 'StripeResourceAllocation' using 'howManyStripes'.
+data Input = Input
+  { inputMaxResources :: !Int
+  -- ^ How many resources the user requested as an upper limit.
+  , inputStripes :: !Int
+  -- ^ How many stripes the user requested.
+  }
   deriving Show
 
-data StripeResourceAllocation = StripeResourceAllocation { poolInput :: !Input, allowedStripes :: !Int }
+-- | How many stripes to create, respecting the 'inputMaxResources' on the
+-- 'poolInput' field. To create one, use 'howManyStripes'.
+data StripeResourceAllocation = StripeResourceAllocation
+  { poolInput :: !Input
+  -- ^ The original input for the calculation.
+  , allowedStripes :: !Int
+  -- ^ The amount of stripes to actually create.
+  }
   deriving Show
 
 -- | Determine how many resources should be allocated to each stripe.
@@ -164,6 +177,9 @@ robin stripeResourceAllocation =
   in
     replicate remainder (baseCount + 1) ++ replicate (numStripes - remainder) baseCount
 
+-- | A stripe must have at least one resource. If the user requested more
+-- stripes than total resources, then we cannot create that many stripes
+-- without exceeding the maximum resource limit.
 howManyStripes :: Input -> StripeResourceAllocation
 howManyStripes inp = StripeResourceAllocation
   { allowedStripes =
