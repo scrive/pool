@@ -1,5 +1,6 @@
 # resource-pool-0.4.0.0 (????-??-??)
 * Require `poolMaxResources` to be not smaller than the number of stripes.
+* Add support for setting the number of stripes.
 
 # resource-pool-0.3.1.0 (2022-06-15)
 * Add `tryWithResource` and `tryTakeResource`.

@@ -34,6 +34,7 @@ library
                    Data.Pool.Introspection
 
   build-depends: base >= 4.11 && < 5
+               , hashable >= 1.1.0.0
                , primitive >= 0.7
                , time
 
