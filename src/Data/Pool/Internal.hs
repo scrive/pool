@@ -181,7 +181,7 @@ getLocalPool pools = do
         -- If there's only one stripe, then we want to skip any work - the
         -- index is always going to be 0.
         pure 0
-      _ | stripeCount <= capabilities ->
+      _ | stripeCount <= capabilities && rem capabilities stripeCount /= 0 ->
         -- If the number of stripes is at most the number of capabilities,
         -- then we can ensure that a capability is always using a single
         -- stripe.
