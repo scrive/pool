@@ -70,7 +70,9 @@ data PoolConfig a = PoolConfig
   -- stripes, then some stripes will have one fewer resource than others.
   , poolNumStripes :: !(Maybe Int)
   -- ^ The number of stripes in the pool. If 'Nothing' is provided, then
-  -- this will use 'getNumCapabilities'.
+  -- this will use 'getNumCapabilities'. This choice is most efficient, as
+  -- it will prevent contention from different capability threads for the
+  -- resources.
   --
   -- The resource count in 'poolMaxResources' will be split evenly among
   -- the available stripes. If there are fewer stripes than resources, then
