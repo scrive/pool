@@ -3,6 +3,7 @@
 
 module Data.Pool.InternalSpec where
 
+import Control.Monad
 import Test.Hspec
 import Test.Hspec.Hedgehog
 import qualified Hedgehog.Gen as Gen
@@ -40,15 +41,22 @@ spec = do
       length resourceAllocations === allowedStripes stripeAndResource
 
   describe "newPool" $ do
-    it "throws an error if max resources is less than stripes" $ do
-      newPool PoolConfig
+    it "does not throw an error if max resources is less than stripes" $ hedgehog $ do
+      mnumStripes <- forAll $ Gen.maybe $ Gen.integral (Range.linear 1 100)
+      maxResources <-
+        forAll $
+          case mnumStripes of
+            Just numStripes ->
+              Gen.integral (Range.linear 1 numStripes)
+            Nothing ->
+              Gen.integral (Range.linear 1 100)
+      void $ evalIO $ newPool PoolConfig
         { createResource = pure ()
         , freeResource = \_ -> pure ()
         , poolCacheTTL = 60.0
-        , poolMaxResources = 10
-        , poolNumStripes = Just 20
+        , poolMaxResources = maxResources
+        , poolNumStripes = mnumStripes
         }
-        `shouldThrow` errorCall ""
 
 inputs :: Gen Input
 inputs = do
