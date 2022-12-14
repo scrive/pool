@@ -8,23 +8,20 @@ module Data.Pool.Internal where
 import Control.Concurrent
 import Control.Exception
 import Control.Monad
+import Data.Hashable (hash)
 import Data.IORef
 import Data.Primitive.SmallArray
 import GHC.Clock
 import qualified Data.List as L
 
 -- | Striped resource pool based on "Control.Concurrent.QSem".
---
--- The number of stripes is arranged to be equal to the number of capabilities
--- so that they never compete over access to the same stripe. This results in a
--- very good performance in a multi-threaded environment.
 data Pool a = Pool
   { poolConfig   :: !(PoolConfig a)
   , localPools   :: !(SmallArray (LocalPool a))
   , reaperRef    :: !(IORef ())
   }
 
--- | A single, capability-local pool.
+-- | A single, local pool.
 data LocalPool a = LocalPool
   { stripeId   :: !Int
   , stripeVar  :: !(MVar (Stripe a))
@@ -68,14 +65,17 @@ data PoolConfig a = PoolConfig
   -- smallest acceptable value is @1@.
   --
   -- /Note:/ for each stripe the number of resources is divided by the number of
-  -- capabilities and rounded up. Therefore the pool might end up creating up to
-  -- @N - 1@ resources more in total than specified, where @N@ is the number of
-  -- capabilities.
+  -- stripes and rounded up, hence the pool might end up creating up to @N - 1@
+  -- resources more in total than specified, where @N@ is the number of stripes.
+  , poolNumStripes :: !(Maybe Int)
+  -- ^ The number of stripes in the pool.
+  --
+  -- /Note:/ if set to 'Nothing', it defaults to the number of capabilities,
+  -- which ensures that threads never compete over access to the same stripe and
+  -- results in a very good performance in a multi-threaded environment.
   }
 
 -- | Create a new striped resource pool.
---
--- The number of stripes is equal to the number of capabilities.
 --
 -- /Note:/ although the runtime system will destroy all idle resources when the
 -- pool is garbage collected, it's recommended to manually call
@@ -87,7 +87,7 @@ newPool pc = do
     error "poolCacheTTL must be at least 0.5"
   when (poolMaxResources pc < 1) $ do
     error "poolMaxResources must be at least 1"
-  numStripes <- getNumCapabilities
+  numStripes <- maybe getNumCapabilities pure (poolNumStripes pc)
   when (numStripes < 1) $ do
     error "numStripes must be at least 1"
   when (poolMaxResources pc < numStripes) $ do
@@ -170,11 +170,18 @@ destroyAllResources pool = forM_ (localPools pool) $ \lp -> do
 ----------------------------------------
 -- Helpers
 
--- | Get a capability-local pool.
-getLocalPool :: SmallArray (LocalPool a) -> IO (LocalPool a)
-getLocalPool pools = do
-  (cid, _) <- threadCapability =<< myThreadId
-  pure $ pools `indexSmallArray` (cid `rem` sizeofSmallArray pools)
+-- | Get a local pool.
+getLocalPool :: Maybe Int -> SmallArray (LocalPool a) -> IO (LocalPool a)
+getLocalPool mNumStripes pools = do
+  sid <- case mNumStripes of
+    -- If the number of stripes was set automatically to the number of
+    -- capabilities, we pick it based on the capability the thread currently
+    -- executes on. This ensures no contention on a specific stripe by
+    -- construction.
+    Nothing -> fmap fst . threadCapability =<< myThreadId
+    Just 1  -> pure 0
+    Just _  -> hash <$> myThreadId
+  pure $ pools `indexSmallArray` (sid `rem` sizeofSmallArray pools)
 
 -- | Wait for the resource to be put into a given 'MVar'.
 waitForResource :: MVar (Stripe a) -> MVar (Maybe a) -> IO (Maybe a)
