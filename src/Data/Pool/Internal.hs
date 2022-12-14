@@ -90,6 +90,8 @@ newPool pc = do
   numStripes <- getNumCapabilities
   when (numStripes < 1) $ do
     error "numStripes must be at least 1"
+  when (poolMaxResources pc < numStripes) $ do
+    error "poolMaxResources must not be smaller than numStripes"
   pools <- fmap (smallArrayFromListN numStripes) . forM [1..numStripes] $ \n -> do
     ref <- newIORef ()
     stripe <- newMVar Stripe
