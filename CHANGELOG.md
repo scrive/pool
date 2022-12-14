@@ -1,6 +1,7 @@
-# resource-pool-0.4.0.0 (???)
-* Allow user to configure the number of stripes explicitly. [#15](https://github.com/scrive/pool/pull/15)
-* Do not exceed maximum resources. [#16](https://github.com/scrive/pool/pull/16)
+# resource-pool-0.4.0.0 (????-??-??)
+* Require `poolMaxResources` to be not smaller than the number of stripes.
+* Add support for setting the number of stripes.
+* The pool will not not exceed maximum resources. [#16](https://github.com/scrive/pool/pull/16)
 
 # resource-pool-0.3.1.0 (2022-06-15)
 * Add `tryWithResource` and `tryTakeResource`.
