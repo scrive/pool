@@ -15,4 +15,3 @@ spec = do
       idleTime <- forAll $ Gen.realFrac_ $ Range.linearFrac 0.5 100
       maxResources <- forAll $ Gen.integral $ Range.linear 1 100
       void $  evalIO $ createPool (pure ()) (\_ -> pure ()) numStripes idleTime maxResources
-
