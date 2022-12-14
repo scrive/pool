@@ -93,7 +93,7 @@ takeResource pool = mask_ $ do
         Nothing -> do
           a <- createResource (poolConfig pool) `onException` restoreSize (stripeVar lp)
           pure (a, lp)
-    else (\a -> (a, lp)) <$> takeAvailableResource pool lp stripe
+    else takeAvailableResource pool lp stripe
 
 -- | A variant of 'withResource' that doesn't execute the action and returns
 -- 'Nothing' instead of blocking if the local pool is exhausted.
@@ -115,7 +115,7 @@ tryTakeResource pool = mask_ $ do
     then do
       putMVar (stripeVar lp) stripe
       pure Nothing
-    else (\a -> Just (a, lp)) <$> takeAvailableResource pool lp stripe
+    else Just <$> takeAvailableResource pool lp stripe
 
 {-# DEPRECATED createPool "Use newPool instead" #-}
 -- | Provided for compatibility with @resource-pool < 0.3@.
@@ -133,19 +133,20 @@ createPool create free numStripes idleTime maxResources = newPool PoolConfig
 ----------------------------------------
 -- Helpers
 
+-- | The 'LocalPool' returned is the same as the input.
 takeAvailableResource
   :: Pool a
   -> LocalPool a
   -> Stripe a
-  -> IO a
+  -> IO (a, LocalPool a)
 takeAvailableResource pool lp stripe = case cache stripe of
   [] -> do
     putMVar (stripeVar lp) $! stripe { available = available stripe - 1 }
     a <- createResource (poolConfig pool) `onException` restoreSize (stripeVar lp)
-    pure a
+    pure (a, lp)
   Entry a _ : as -> do
     putMVar (stripeVar lp) $! stripe
      { available = available stripe - 1
      , cache = as
      }
-    pure a
+    pure (a, lp)
