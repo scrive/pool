@@ -58,7 +58,7 @@ withResource pool act = mask $ \unmask -> do
 -- to the pool (via 'putResource').
 takeResource :: Pool a -> IO (a, LocalPool a)
 takeResource pool = mask_ $ do
-  lp <- getLocalPool (poolNumStripes $ poolConfig pool) (localPools pool)
+  lp <- getLocalPool (localPools pool)
   stripe <- takeMVar (stripeVar lp)
   if available stripe == 0
     then do
@@ -85,7 +85,7 @@ tryWithResource pool act = mask $ \unmask -> tryTakeResource pool >>= \case
 -- the local pool is exhausted.
 tryTakeResource :: Pool a -> IO (Maybe (a, LocalPool a))
 tryTakeResource pool = mask_ $ do
-  lp <- getLocalPool (poolNumStripes $ poolConfig pool) (localPools pool)
+  lp <- getLocalPool (localPools pool)
   stripe <- takeMVar (stripeVar lp)
   if available stripe == 0
     then do

@@ -171,17 +171,38 @@ destroyAllResources pool = forM_ (localPools pool) $ \lp -> do
 -- Helpers
 
 -- | Get a local pool.
-getLocalPool :: Maybe Int -> SmallArray (LocalPool a) -> IO (LocalPool a)
-getLocalPool mNumStripes pools = do
-  sid <- case mNumStripes of
-    -- If the number of stripes was set automatically to the number of
-    -- capabilities, we pick it based on the capability the thread currently
-    -- executes on. This ensures no contention on a specific stripe by
-    -- construction.
-    Nothing -> fmap fst . threadCapability =<< myThreadId
-    Just 1  -> pure 0
-    Just _  -> hash <$> myThreadId
-  pure $ pools `indexSmallArray` (sid `rem` sizeofSmallArray pools)
+getLocalPool :: SmallArray (LocalPool a) -> IO (LocalPool a)
+getLocalPool pools = do
+  let stripeCount = sizeofSmallArray pools
+  capabilities <- getNumCapabilities
+  sid <-
+    case stripeCount of
+      1 ->
+        -- If there's only one stripe, then we want to skip any work - the
+        -- index is always going to be 0.
+        pure 0
+      _ | stripeCount <= capabilities ->
+        -- If the number of stripes is at most the number of capabilities,
+        -- then we can ensure that a capability is always using a single
+        -- stripe.
+        --
+        -- If the number of stripe is equal to the number of capabilites,
+        -- then there will be no between-capability contention on the
+        -- stripe.
+        --
+        -- If the number of stripes is less than the number of
+        -- capabilities, then some stripes will be shared among
+        -- capabilities, allowing some contention.
+        fmap fst . threadCapability =<< myThreadId
+      _ ->
+        -- If we have more stripes than capabilities, we just use the
+        -- hash of the ThreadId. This means that setting more stripes than
+        -- capabilities will have contention among capabilities for
+        -- resources.
+        --
+        -- TODO: Allow this scenario to be fast somehow.
+        hash <$> myThreadId
+  pure $ pools `indexSmallArray` (sid `rem` stripeCount)
 
 -- | Wait for the resource to be put into a given 'MVar'.
 waitForResource :: MVar (Stripe a) -> MVar (Maybe a) -> IO (Maybe a)
