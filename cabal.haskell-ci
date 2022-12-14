@@ -1,2 +1,4 @@
 branches:       master
 tests:          True
+
+ghcup-jobs:     True
