@@ -39,6 +39,17 @@ spec = do
       let resourceAllocations = robin stripeAndResource
       length resourceAllocations === allowedStripes stripeAndResource
 
+  describe "newPool" $ do
+    it "throws an error if max resources is less than stripes" $ do
+      newPool PoolConfig
+        { createResource = pure ()
+        , freeResource = \_ -> pure ()
+        , poolCacheTTL = 60.0
+        , poolMaxResources = 10
+        , poolNumStripes = Just 20
+        }
+        `shouldThrow` errorCall ""
+
 inputs :: Gen Input
 inputs = do
   resources <- Gen.int (Range.exponentialFrom 8 1 1000)
