@@ -171,17 +171,26 @@ destroyAllResources pool = forM_ (localPools pool) $ \lp -> do
 -- Helpers
 
 -- | Get a local pool.
-getLocalPool :: Maybe Int -> SmallArray (LocalPool a) -> IO (LocalPool a)
-getLocalPool mNumStripes pools = do
-  sid <- case mNumStripes of
-    -- If the number of stripes was set automatically to the number of
-    -- capabilities, we pick it based on the capability the thread currently
-    -- executes on. This ensures no contention on a specific stripe by
-    -- construction.
-    Nothing -> fmap fst . threadCapability =<< myThreadId
-    Just 1  -> pure 0
-    Just _  -> hash <$> myThreadId
-  pure $ pools `indexSmallArray` (sid `rem` sizeofSmallArray pools)
+getLocalPool :: SmallArray (LocalPool a) -> IO (LocalPool a)
+getLocalPool pools = do
+  sid <- if stripes == 1
+    -- If there is just one stripe, there is no choice.
+    then pure 0
+    else do
+      capabilities <- getNumCapabilities
+      -- If the number of stripes is smaller than the number of capabilities and
+      -- doesn't divide it, selecting a stripe by a capability the current
+      -- thread runs on wouldn't give equal load distribution across all stripes
+      -- (e.g. if there are 2 stripes and 3 capabilities, stripe 0 would be used
+      -- by capability 0 and 2, while stripe 1 would only be used by capability
+      -- 1, a 100% load difference). In such case we select based on the id of a
+      -- thread.
+      if stripes < capabilities && capabilities `rem` stripes /= 0
+        then hash <$> myThreadId
+        else fmap fst . threadCapability =<< myThreadId
+  pure $ pools `indexSmallArray` (sid `rem` stripes)
+  where
+    stripes = sizeofSmallArray pools
 
 -- | Wait for the resource to be put into a given 'MVar'.
 waitForResource :: MVar (Stripe a) -> MVar (Maybe a) -> IO (Maybe a)

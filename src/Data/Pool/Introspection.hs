@@ -55,7 +55,7 @@ withResource pool act = mask $ \unmask -> do
 takeResource :: Pool a -> IO (Resource a, LocalPool a)
 takeResource pool = mask_ $ do
   t1 <- getMonotonicTime
-  lp <- getLocalPool (poolNumStripes $ poolConfig pool) (localPools pool)
+  lp <- getLocalPool (localPools pool)
   stripe <- takeMVar (stripeVar lp)
   if available stripe == 0
     then do
@@ -103,7 +103,7 @@ tryWithResource pool act = mask $ \unmask -> tryTakeResource pool >>= \case
 tryTakeResource :: Pool a -> IO (Maybe (Resource a, LocalPool a))
 tryTakeResource pool = mask_ $ do
   t1 <- getMonotonicTime
-  lp <- getLocalPool (poolNumStripes $ poolConfig pool) (localPools pool)
+  lp <- getLocalPool (localPools pool)
   stripe <- takeMVar (stripeVar lp)
   if available stripe == 0
     then do
