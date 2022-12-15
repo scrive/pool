@@ -9,7 +9,9 @@ module Data.Pool
 
     -- * Resource management
   , withResource
+  , withResourceTimeout
   , takeResource
+  , takeResourceTimeout
   , tryWithResource
   , tryTakeResource
   , putResource
@@ -23,6 +25,7 @@ module Data.Pool
 import Control.Concurrent
 import Control.Exception
 import Data.Time (NominalDiffTime)
+import System.Timeout
 
 import Data.Pool.Internal
 
@@ -50,6 +53,27 @@ withResource pool act = mask $ \unmask -> do
   putResource localPool res
   pure r
 
+-- | Attempt to acquire  a resource within given time in microseconds. If
+-- the resource is acquired at that time, provide @Just a@ to the action.
+-- If the timeout failed, then provide @Nothing@ to the callback.
+withResourceTimeout :: Int -> Pool a -> (Maybe a -> IO r) -> IO r
+withResourceTimeout i pool act = mask $ \unmask -> do
+  mres <- takeResourceTimeout i pool
+  case mres of
+    Nothing ->
+      unmask (act Nothing)
+    Just (res, localPool) -> do
+      r <- unmask (act (Just res)) `onException` destroyResource pool localPool res
+      putResource localPool res
+      pure r
+
+-- | Attempt to take a resource from the pool in the given number of
+-- microseconds. If the resource cannot be acquired in that time, return
+-- 'Nothing'.
+takeResourceTimeout :: Int -> Pool a -> IO (Maybe (a, LocalPool a))
+takeResourceTimeout i p =
+  timeout i $ takeResource p
+
 -- | Take a resource from the pool, following the same results as
 -- 'withResource'.
 --
@@ -69,7 +93,7 @@ takeResource pool = mask_ $ do
         Nothing -> do
           a <- createResource (poolConfig pool) `onException` restoreSize (stripeVar lp)
           pure (a, lp)
-    else takeAvailableResource pool lp stripe
+    else (\a -> (a, lp)) <$> takeAvailableResource pool lp stripe
 
 -- | A variant of 'withResource' that doesn't execute the action and returns
 -- 'Nothing' instead of blocking if the local pool is exhausted.
@@ -91,7 +115,7 @@ tryTakeResource pool = mask_ $ do
     then do
       putMVar (stripeVar lp) stripe
       pure Nothing
-    else Just <$> takeAvailableResource pool lp stripe
+    else (\a -> Just (a, lp)) <$> takeAvailableResource pool lp stripe
 
 {-# DEPRECATED createPool "Use newPool instead" #-}
 -- | Provided for compatibility with @resource-pool < 0.3@.
@@ -113,15 +137,15 @@ takeAvailableResource
   :: Pool a
   -> LocalPool a
   -> Stripe a
-  -> IO (a, LocalPool a)
+  -> IO a
 takeAvailableResource pool lp stripe = case cache stripe of
   [] -> do
     putMVar (stripeVar lp) $! stripe { available = available stripe - 1 }
     a <- createResource (poolConfig pool) `onException` restoreSize (stripeVar lp)
-    pure (a, lp)
+    pure a
   Entry a _ : as -> do
     putMVar (stripeVar lp) $! stripe
      { available = available stripe - 1
      , cache = as
      }
-    pure (a, lp)
+    pure a
