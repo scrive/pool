@@ -102,7 +102,7 @@ createPool create free numStripes idleTime maxResources = newPool PoolConfig
   { createResource   = create
   , freeResource     = free
   , poolCacheTTL     = realToFrac idleTime
-  , poolMaxResources = maxResources
+  , poolMaxResources = numStripes * maxResources
   , poolNumStripes   = Just numStripes
   }
 
