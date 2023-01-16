@@ -1,4 +1,4 @@
-# resource-pool-0.4.0.0 (????-??-??)
+# resource-pool-0.4.0.0 (2023-01-16)
 * Require `poolMaxResources` to be not smaller than the number of stripes.
 * Add support for setting the number of stripes.
 * Hide the constructor of `PoolConfig` from the public API and provide
