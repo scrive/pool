@@ -1,10 +1,14 @@
 -- | A variant of "Data.Pool" with introspection capabilities.
 module Data.Pool.Introspection
   ( -- * Pool
-    PoolConfig(..)
-  , Pool
+    Pool
   , LocalPool
   , newPool
+
+  -- ** Configuration
+  , PoolConfig
+  , defaultPoolConfig
+  , setNumStripes
 
     -- * Resource management
   , Resource(..)

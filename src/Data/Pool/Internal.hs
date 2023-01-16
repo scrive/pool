@@ -50,30 +50,57 @@ data Queue a = Queue !(MVar (Maybe a)) (Queue a) | Empty
 
 -- | Configuration of a 'Pool'.
 data PoolConfig a = PoolConfig
-  { createResource :: !(IO a)
-    -- ^ The action that creates a new resource.
-  , freeResource :: !(a -> IO ())
-    -- ^ The action that destroys an existing resource.
-  , poolCacheTTL :: !Double
+  { createResource   :: !(IO a)
+  , freeResource     :: !(a -> IO ())
+  , poolCacheTTL     :: !Double
+  , poolMaxResources :: !Int
+  , poolNumStripes   :: !(Maybe Int)
+  }
+
+-- | Create a 'PoolConfig' with optional parameters having default values.
+--
+-- For setting optional parameters have a look at:
+--
+-- - 'setNumStripes'
+--
+-- @since 0.4.0.0
+defaultPoolConfig
+  :: IO a
+  -- ^ The action that creates a new resource.
+  -> (a -> IO ())
+  -- ^ The action that destroys an existing resource.
+  -> Double
   -- ^ The amount of seconds for which an unused resource is kept around. The
   -- smallest acceptable value is @0.5@.
   --
   -- /Note:/ the elapsed time before destroying a resource may be a little
   -- longer than requested, as the collector thread wakes at 1-second intervals.
-  , poolMaxResources :: !Int
-  -- ^ The maximum number of resources to keep open across all stripes. The
+  -> Int
+  -- ^ The maximum number of resources to keep open __across all stripes__. The
   -- smallest acceptable value is @1@.
   --
   -- /Note:/ for each stripe the number of resources is divided by the number of
   -- stripes and rounded up, hence the pool might end up creating up to @N - 1@
   -- resources more in total than specified, where @N@ is the number of stripes.
-  , poolNumStripes :: !(Maybe Int)
-  -- ^ The number of stripes in the pool.
-  --
-  -- /Note:/ if set to 'Nothing', it defaults to the number of capabilities,
-  -- which ensures that threads never compete over access to the same stripe and
-  -- results in a very good performance in a multi-threaded environment.
+  -> PoolConfig a
+defaultPoolConfig create free cacheTTL maxResources = PoolConfig
+  { createResource   = create
+  , freeResource     = free
+  , poolCacheTTL     = cacheTTL
+  , poolMaxResources = maxResources
+  , poolNumStripes   = Nothing
   }
+
+-- | Set the number of stripes in the pool.
+--
+-- If set to 'Nothing' (the default value), the pool will create the amount of
+-- stripes equal to the number of capabilities. This ensures that threads never
+-- compete over access to the same stripe and results in a very good performance
+-- in a multi-threaded environment.
+--
+-- @since 0.4.0.0
+setNumStripes :: Maybe Int -> PoolConfig a -> PoolConfig a
+setNumStripes numStripes pc = pc { poolNumStripes = numStripes }
 
 -- | Create a new striped resource pool.
 --
