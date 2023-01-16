@@ -2,10 +2,14 @@
 -- collections of resources such as database connections.
 module Data.Pool
   ( -- * Pool
-    PoolConfig(..)
-  , Pool
+    Pool
   , LocalPool
   , newPool
+
+    -- ** Configuration
+  , PoolConfig
+  , defaultPoolConfig
+  , setNumStripes
 
     -- * Resource management
   , withResource
