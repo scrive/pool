@@ -5,14 +5,14 @@ module Data.Pool.Introspection
   , LocalPool
   , newPool
 
-  -- ** Configuration
+    -- ** Configuration
   , PoolConfig
   , defaultPoolConfig
   , setNumStripes
 
     -- * Resource management
-  , Resource(..)
-  , Acquisition(..)
+  , Resource (..)
+  , Acquisition (..)
   , withResource
   , takeResource
   , tryWithResource
@@ -31,20 +31,21 @@ import Data.Pool.Internal
 
 -- | A resource taken from the pool along with additional information.
 data Resource a = Resource
-  { resource           :: a
-  , stripeNumber       :: !Int
+  { resource :: a
+  , stripeNumber :: !Int
   , availableResources :: !Int
-  , acquisition        :: !Acquisition
-  , acquisitionTime    :: !Double
-  , creationTime       :: !(Maybe Double)
-  } deriving (Eq, Show, Generic)
+  , acquisition :: !Acquisition
+  , acquisitionTime :: !Double
+  , creationTime :: !(Maybe Double)
+  }
+  deriving (Eq, Show, Generic)
 
 -- | Describes how a resource was acquired from the pool.
 data Acquisition
-  = Immediate
-  -- ^ A resource was taken from the pool immediately.
-  | Delayed
-  -- ^ The thread had to wait until a resource was released.
+  = -- | A resource was taken from the pool immediately.
+    Immediate
+  | -- | The thread had to wait until a resource was released.
+    Delayed
   deriving (Eq, Show, Generic)
 
 -- | 'Data.Pool.withResource' with introspection capabilities.
@@ -64,43 +65,46 @@ takeResource pool = mask_ $ do
   if available stripe == 0
     then do
       q <- newEmptyMVar
-      putMVar (stripeVar lp) $! stripe { queueR = Queue q (queueR stripe) }
+      putMVar (stripeVar lp) $! stripe {queueR = Queue q (queueR stripe)}
       waitForResource (stripeVar lp) q >>= \case
         Just a -> do
           t2 <- getMonotonicTime
-          let res = Resource
-                { resource           = a
-                , stripeNumber       = stripeId lp
-                , availableResources = 0
-                , acquisition        = Delayed
-                , acquisitionTime    = t2 - t1
-                , creationTime       = Nothing
-                }
+          let res =
+                Resource
+                  { resource = a
+                  , stripeNumber = stripeId lp
+                  , availableResources = 0
+                  , acquisition = Delayed
+                  , acquisitionTime = t2 - t1
+                  , creationTime = Nothing
+                  }
           pure (res, lp)
         Nothing -> do
           t2 <- getMonotonicTime
-          a  <- createResource (poolConfig pool) `onException` restoreSize (stripeVar lp)
+          a <- createResource (poolConfig pool) `onException` restoreSize (stripeVar lp)
           t3 <- getMonotonicTime
-          let res = Resource
-                { resource           = a
-                , stripeNumber       = stripeId lp
-                , availableResources = 0
-                , acquisition        = Delayed
-                , acquisitionTime    = t2 - t1
-                , creationTime       = Just $! t3 - t2
-                }
+          let res =
+                Resource
+                  { resource = a
+                  , stripeNumber = stripeId lp
+                  , availableResources = 0
+                  , acquisition = Delayed
+                  , acquisitionTime = t2 - t1
+                  , creationTime = Just $! t3 - t2
+                  }
           pure (res, lp)
     else takeAvailableResource pool t1 lp stripe
 
 -- | A variant of 'withResource' that doesn't execute the action and returns
 -- 'Nothing' instead of blocking if the local pool is exhausted.
 tryWithResource :: Pool a -> (Resource a -> IO r) -> IO (Maybe r)
-tryWithResource pool act = mask $ \unmask -> tryTakeResource pool >>= \case
-  Just (res, localPool) -> do
-    r <- unmask (act res) `onException` destroyResource pool localPool (resource res)
-    putResource localPool (resource res)
-    pure (Just r)
-  Nothing -> pure Nothing
+tryWithResource pool act = mask $ \unmask ->
+  tryTakeResource pool >>= \case
+    Just (res, localPool) -> do
+      r <- unmask (act res) `onException` destroyResource pool localPool (resource res)
+      putResource localPool (resource res)
+      pure (Just r)
+    Nothing -> pure Nothing
 
 -- | A variant of 'takeResource' that returns 'Nothing' instead of blocking if
 -- the local pool is exhausted.
@@ -127,29 +131,31 @@ takeAvailableResource
 takeAvailableResource pool t1 lp stripe = case cache stripe of
   [] -> do
     let newAvailable = available stripe - 1
-    putMVar (stripeVar lp) $! stripe { available = newAvailable }
+    putMVar (stripeVar lp) $! stripe {available = newAvailable}
     t2 <- getMonotonicTime
-    a  <- createResource (poolConfig pool) `onException` restoreSize (stripeVar lp)
+    a <- createResource (poolConfig pool) `onException` restoreSize (stripeVar lp)
     t3 <- getMonotonicTime
-    let res = Resource
-          { resource           = a
-          , stripeNumber       = stripeId lp
-          , availableResources = newAvailable
-          , acquisition        = Immediate
-          , acquisitionTime    = t2 - t1
-          , creationTime       = Just $! t3 - t2
-          }
+    let res =
+          Resource
+            { resource = a
+            , stripeNumber = stripeId lp
+            , availableResources = newAvailable
+            , acquisition = Immediate
+            , acquisitionTime = t2 - t1
+            , creationTime = Just $! t3 - t2
+            }
     pure (res, lp)
   Entry a _ : as -> do
     let newAvailable = available stripe - 1
-    putMVar (stripeVar lp) $! stripe { available = newAvailable, cache = as }
+    putMVar (stripeVar lp) $! stripe {available = newAvailable, cache = as}
     t2 <- getMonotonicTime
-    let res = Resource
-          { resource           = a
-          , stripeNumber       = stripeId lp
-          , availableResources = newAvailable
-          , acquisition        = Immediate
-          , acquisitionTime    = t2 - t1
-          , creationTime       = Nothing
-          }
+    let res =
+          Resource
+            { resource = a
+            , stripeNumber = stripeId lp
+            , availableResources = newAvailable
+            , acquisition = Immediate
+            , acquisitionTime = t2 - t1
+            , creationTime = Nothing
+            }
     pure (res, lp)
