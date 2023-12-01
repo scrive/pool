@@ -13,7 +13,9 @@ module Data.Pool
 
     -- * Resource management
   , withResource
+  , withResourceTimeout
   , takeResource
+  , takeResourceTimeout
   , tryWithResource
   , tryTakeResource
   , putResource
@@ -27,6 +29,7 @@ module Data.Pool
 import Control.Concurrent
 import Control.Exception
 import Data.Time (NominalDiffTime)
+import System.Timeout
 
 import Data.Pool.Internal
 
@@ -53,6 +56,27 @@ withResource pool act = mask $ \unmask -> do
   r <- unmask (act res) `onException` destroyResource pool localPool res
   putResource localPool res
   pure r
+
+-- | Attempt to acquire  a resource within given time in microseconds. If
+-- the resource is acquired at that time, provide @Just a@ to the action.
+-- If the timeout failed, then provide @Nothing@ to the callback.
+withResourceTimeout :: Int -> Pool a -> (Maybe a -> IO r) -> IO r
+withResourceTimeout i pool act = mask $ \unmask -> do
+  mres <- takeResourceTimeout i pool
+  case mres of
+    Nothing ->
+      unmask (act Nothing)
+    Just (res, localPool) -> do
+      r <- unmask (act (Just res)) `onException` destroyResource pool localPool res
+      putResource localPool res
+      pure r
+
+-- | Attempt to take a resource from the pool in the given number of
+-- microseconds. If the resource cannot be acquired in that time, return
+-- 'Nothing'.
+takeResourceTimeout :: Int -> Pool a -> IO (Maybe (a, LocalPool a))
+takeResourceTimeout i p =
+  timeout i $ takeResource p
 
 -- | Take a resource from the pool, following the same results as
 -- 'withResource'.
@@ -117,6 +141,7 @@ createPool create free numStripes idleTime maxResources =
 ----------------------------------------
 -- Helpers
 
+-- | The 'LocalPool' returned is the same as the input.
 takeAvailableResource
   :: Pool a
   -> LocalPool a
