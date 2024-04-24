@@ -36,6 +36,7 @@ library
   build-depends: base >= 4.11 && < 5
                , hashable >= 1.1.0.0
                , primitive >= 0.7
+               , safe-exceptions
                , time
 
   ghc-options: -Wall -Wcompat

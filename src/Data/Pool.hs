@@ -1,3 +1,6 @@
+{-# LANGUAGE NamedFieldPuns #-}
+{-# LANGUAGE ScopedTypeVariables #-}
+
 -- | A high-performance pooling abstraction for managing flexibly-sized
 -- collections of resources such as database connections.
 module Data.Pool
@@ -19,6 +22,8 @@ module Data.Pool
   , putResource
   , destroyResource
   , destroyAllResources
+  , tryWithResourceThenCreate
+  , tryWithResourceNThenCreate
 
     -- * Compatibility with 0.2
   , createPool
@@ -26,6 +31,8 @@ module Data.Pool
 
 import Control.Concurrent
 import Control.Exception
+import qualified Control.Exception as AllException
+import qualified Control.Exception.Safe as SyncException
 import Data.Time (NominalDiffTime)
 
 import Data.Pool.Internal
@@ -134,3 +141,85 @@ takeAvailableResource pool lp stripe = case cache stripe of
         , cache = as
         }
     pure (a, lp)
+
+-- | This does something like 'withResource' initially, in that it tries to get a resource from the pool and run an action on it,
+-- returning the resource to the pool if the action doesn't throw an exception, but destroying if the action does throw an exception.
+-- 
+-- This function does the same as 'withResource' if the exception thrown is a asynchonous exception. 
+-- But, in this function, if the exception is a synchronous exceptions, unlike 'withResource', we just don't immediately rethrow.
+-- We still destroy the resource, like 'withResource', but instead of rethrowing we run 
+-- 'handlePoolResourceException' on the exception (this should just be a logging function). 
+-- Then we actually create a fresh new resource, not just pull another existing one from the pool.
+-- We then try to run the action on this fresh resource. If this succeeds, we put this fresh resource into the pool.
+-- If this fails though, we destroy the fresh resource, and rethrow the exception.
+-- 
+-- What is this useful for? Sometimes you have a pool of resources, that may just all break at the same time for some reason.
+-- For example, someone may have restarted your database, so all of your connections are now invalid.
+-- 
+-- Lets say you have a pool of 100 database connections. Now you've got a pool of potentially 100 dead connections.
+-- 
+-- The only way to get a good connection is to run 'withResource' 101 times, which will eventually destroy all the bad connections.
+-- 
+-- Also, maybe the database isn't back up yet. Now even retrying 101 times isn't going to get you a good connection.
+-- 
+-- Note that unlike 'withResource' that will reduce the number of resources in the pool if the action fails with an exception,
+-- 'tryWithResourceThenCreate' with only reduce the number of resources in the pool if:
+-- 
+-- The action applied to the resource from the pool fails with an asynchronous exception OR
+-- (
+--   The action applied to the resource from the pool fails with an synchronous exception AND
+--   (
+--     The creation of a new resource fails with an exception OR
+--     The action applied to the new resource fails with an exception
+--   )
+-- )
+-- 
+-- So basically, if your pool resource fails, but your fresh resource succeeds, you've just replaced the broken resource with a fresh one.
+-- 
+-- It's probably worthwhile to at least a few times to try to find good existing resource in the pool before creating a new one.
+-- 
+-- So I would recommend is running 'withResource' before this, maybe a few times, and then running 'tryWithResourceThenCreate'.
+-- 
+-- And indeed, that's what 'tryWithResourceNThenCreate' does.
+tryWithResourceThenCreate :: forall r a. (SomeException -> IO ()) -> Pool a -> (a -> IO r) -> IO r
+tryWithResourceThenCreate handlePoolResourceException pool@Pool{poolConfig = PoolConfig{createResource, freeResource} } act = 
+  AllException.mask $ \unmask -> do
+    (res, localPool) <- takeResource pool
+    -- This will catch any synchonous exceptions in `tryR`. But any async exceptions will be flow to the 'onException` handler
+    -- to destroy the resource and just rethrow the exception.
+    tryR :: (Either SomeException r) <- 
+      (SyncException.try $ unmask (act res)) `AllException.onException` destroyResource pool localPool res
+    case tryR of
+      Right r -> do
+        -- We've ran the action sucessfully on the resource in the pool. Just put it back in the pool and return.
+        putResource localPool res
+        pure r
+      Left (e :: SomeException) -> do
+        -- We've failed to run the action on the resource in the pool.
+        -- So destroy it...
+        destroyResource pool localPool res
+        -- Run our handler for the first exception
+        unmask $ handlePoolResourceException e
+        -- And create an entirely new resource
+        newRes <- unmask createResource
+        -- Run the action on the new resource. If this fails for any reason, free the resource and rethrow the exception
+        result <- AllException.onException (unmask (act newRes)) (freeResource newRes)
+        -- If we've got here, we've successfully run the action on the new resource. Put this fresh resource in the pool
+        putResource localPool newRes
+        pure result
+
+-- | Run 'withResource' 'n' times. Each time we run it if it throws we run 'handlePoolResourceException' and try again.
+-- If 'withResource' has failed 'n' times, then we run 'tryWithResourceThenCreate', 
+-- which is basically like running 'withResource' one more time, but instead if it fails it
+-- creates a fresh resource instead of getting one from the pool.
+-- 
+-- What this means that 'tryWithResourceNThenCreate' will potentially run 'act' (n + 2) times.
+tryWithResourceNThenCreate :: forall r a. (SomeException -> IO ()) -> Int -> Pool a -> (a -> IO r) -> IO r
+tryWithResourceNThenCreate handlePoolResourceException n pool act = go n where
+  go :: Int -> IO r
+  go i = case (i <= 0) of
+    True -> tryWithResourceThenCreate handlePoolResourceException pool act
+    False -> 
+      withResource pool act `SyncException.catch` \(e :: SomeException) -> do
+        handlePoolResourceException e
+        go (i - 1)
