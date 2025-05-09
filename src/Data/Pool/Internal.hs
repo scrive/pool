@@ -7,13 +7,15 @@
 module Data.Pool.Internal where
 
 import Control.Concurrent
+import Control.Concurrent.STM
 import Control.Exception
 import Control.Monad
 import Data.Hashable (hash)
 import Data.IORef
 import qualified Data.List as L
 import Data.Primitive.SmallArray
-import GHC.Clock
+import GHC.Clock (getMonotonicTime)
+import GHC.Conc (unsafeIOToSTM)
 
 -- | Striped resource pool based on "Control.Concurrent.QSem".
 data Pool a = Pool
@@ -25,12 +27,13 @@ data Pool a = Pool
 -- | A single, local pool.
 data LocalPool a = LocalPool
   { stripeId :: !Int
-  , stripeVar :: !(MVar (Stripe a))
+  , stripeVar :: !(TVar (Stripe a))
   , cleanerRef :: !(IORef ())
   }
 
 -- | Stripe of a resource pool. If @available@ is 0, the list of threads waiting
--- for a resource (each with an associated 'MVar') is @queue ++ reverse queueR@.
+-- for a resource (each with an associated 'TMVar') is @queue ++ reverse queueR@
+-- to ensure fairness.
 data Stripe a = Stripe
   { available :: !Int
   , cache :: ![Entry a]
@@ -44,10 +47,10 @@ data Entry a = Entry
   , lastUsed :: !Double
   }
 
--- | A queue of MVarS corresponding to threads waiting for resources.
+-- | A queue of TMVarS corresponding to threads waiting for resources.
 --
 -- Basically a monomorphic list to save two pointer indirections.
-data Queue a = Queue !(MVar (Maybe a)) (Queue a) | Empty
+data Queue a = Queue !(TMVar (Maybe a)) (Queue a) | Empty
 
 -- | Configuration of a 'Pool'.
 data PoolConfig a = PoolConfig
@@ -129,7 +132,7 @@ newPool pc = do
   pools <- fmap (smallArrayFromListN numStripes) . forM [1 .. numStripes] $ \n -> do
     ref <- newIORef ()
     stripe <-
-      newMVar
+      newTVarIO
         Stripe
           { available = poolMaxResources pc `quotCeil` numStripes
           , cache = []
@@ -174,22 +177,19 @@ newPool pc = do
 --
 -- Note that this will ignore any exceptions in the destroy function.
 destroyResource :: Pool a -> LocalPool a -> a -> IO ()
-destroyResource pool lp a = do
-  uninterruptibleMask_ $ do
-    -- Note [signal uninterruptible]
-    stripe <- takeMVar (stripeVar lp)
+destroyResource pool lp a = mask_ $ do
+  atomically $ do
+    stripe <- readTVar (stripeVar lp)
     newStripe <- signal stripe Nothing
-    putMVar (stripeVar lp) newStripe
-    void . try @SomeException $ freeResource (poolConfig pool) a
+    writeTVar (stripeVar lp) $! newStripe
+  void . try @SomeException $ freeResource (poolConfig pool) a
 
 -- | Return a resource to the given 'LocalPool'.
 putResource :: LocalPool a -> a -> IO ()
-putResource lp a = do
-  uninterruptibleMask_ $ do
-    -- Note [signal uninterruptible]
-    stripe <- takeMVar (stripeVar lp)
-    newStripe <- signal stripe (Just a)
-    putMVar (stripeVar lp) newStripe
+putResource lp a = atomically $ do
+  stripe <- readTVar (stripeVar lp)
+  newStripe <- signal stripe (Just a)
+  writeTVar (stripeVar lp) $! newStripe
 
 -- | Destroy all resources in all stripes in the pool.
 --
@@ -235,89 +235,78 @@ getLocalPool pools = do
   where
     stripes = sizeofSmallArray pools
 
--- | Wait for the resource to be put into a given 'MVar'.
-waitForResource :: MVar (Stripe a) -> MVar (Maybe a) -> IO (Maybe a)
-waitForResource mstripe q = takeMVar q `onException` cleanup
+-- | Wait for the resource to be put into a given 'TMVar'.
+waitForResource :: TVar (Stripe a) -> TMVar (Maybe a) -> IO (Maybe a)
+waitForResource mstripe q = atomically (takeTMVar q) `onException` cleanup
   where
-    cleanup = uninterruptibleMask_ $ do
-      -- Note [signal uninterruptible]
-      stripe <- takeMVar mstripe
+    cleanup = atomically $ do
+      stripe <- readTVar mstripe
       newStripe <-
-        tryTakeMVar q >>= \case
+        tryTakeTMVar q >>= \case
           Just ma -> do
             -- Between entering the exception handler and taking ownership of
             -- the stripe we got the resource we wanted. We don't need it
             -- anymore though, so pass it to someone else.
             signal stripe ma
           Nothing -> do
-            -- If we're still waiting, fill up the MVar with an undefined value
-            -- so that 'signal' can discard our MVar from the queue.
-            putMVar q $ error "unreachable"
+            -- If we're still waiting, fill up the TMVar with an undefined value
+            -- so that 'signal' can discard our TMVar from the queue.
+            putTMVar q $ error "unreachable"
             pure stripe
-      putMVar mstripe newStripe
+      writeTVar mstripe $! newStripe
 
 -- | If an exception is received while a resource is being created, restore the
 -- original size of the stripe.
-restoreSize :: MVar (Stripe a) -> IO ()
-restoreSize mstripe = uninterruptibleMask_ $ do
-  -- 'uninterruptibleMask_' is used since 'takeMVar' might block.
-  stripe <- takeMVar mstripe
-  putMVar mstripe $! stripe {available = available stripe + 1}
+restoreSize :: TVar (Stripe a) -> IO ()
+restoreSize mstripe = atomically $ do
+  modifyTVar' mstripe $ \stripe -> stripe {available = available stripe + 1}
 
 -- | Free resource entries in the stripes that fulfil a given condition.
 cleanStripe
   :: (Entry a -> Bool)
   -> (a -> IO ())
-  -> MVar (Stripe a)
+  -> TVar (Stripe a)
   -> IO ()
-cleanStripe isStale free mstripe = mask $ \unmask -> do
+cleanStripe isStale free mstripe = mask_ $ do
   -- Asynchronous exceptions need to be masked here to prevent leaking of
   -- 'stale' resources before they're freed.
-  stale <- modifyMVar mstripe $ \stripe -> unmask $ do
+  stale <- atomically $ do
+    stripe <- readTVar mstripe
     let (stale, fresh) = L.partition isStale (cache stripe)
-        -- There's no need to update 'available' here because it only tracks
-        -- the number of resources taken from the pool.
-        newStripe = stripe {cache = fresh}
-    newStripe `seq` pure (newStripe, map entry stale)
+    -- There's no need to update 'available' here because it only tracks
+    -- the number of resources taken from the pool.
+    writeTVar mstripe $! stripe {cache = fresh}
+    pure $ map entry stale
   -- We need to ignore exceptions in the 'free' function, otherwise if an
   -- exception is thrown half-way, we leak the rest of the resources. Also,
   -- asynchronous exceptions need to be hard masked here since freeing a
   -- resource might in theory block.
   uninterruptibleMask_ . forM_ stale $ try @SomeException . free
 
--- Note [signal uninterruptible]
---
---   If we have
---
---      bracket takeResource putResource (...)
---
---   and an exception arrives at the putResource, then we must not lose the
---   resource. The putResource is masked by bracket, but taking the MVar might
---   block, and so it would be interruptible. Hence we need an uninterruptible
---   variant of mask here.
-signal :: Stripe a -> Maybe a -> IO (Stripe a)
+signal :: forall a. Stripe a -> Maybe a -> STM (Stripe a)
 signal stripe ma =
   if available stripe == 0
     then loop (queue stripe) (queueR stripe)
     else do
       newCache <- case ma of
         Just a -> do
-          now <- getMonotonicTime
+          now <- unsafeIOToSTM getMonotonicTime
           pure $ Entry a now : cache stripe
         Nothing -> pure $ cache stripe
-      pure $!
+      pure
         stripe
           { available = available stripe + 1
           , cache = newCache
           }
   where
+    loop :: Queue a -> Queue a -> STM (Stripe a)
     loop Empty Empty = do
       newCache <- case ma of
         Just a -> do
-          now <- getMonotonicTime
+          now <- unsafeIOToSTM getMonotonicTime
           pure [Entry a now]
         Nothing -> pure []
-      pure $!
+      pure
         Stripe
           { available = 1
           , cache = newCache
@@ -326,22 +315,22 @@ signal stripe ma =
           }
     loop Empty qR = loop (reverseQueue qR) Empty
     loop (Queue q qs) qR =
-      tryPutMVar q ma >>= \case
+      tryPutTMVar q ma >>= \case
         -- This fails when 'waitForResource' went into the exception handler and
-        -- filled the MVar (with an undefined value) itself. In such case we
+        -- filled the TMVar (with an undefined value) itself. In such case we
         -- simply ignore it.
         False -> loop qs qR
         True ->
-          pure $!
+          pure
             stripe
               { available = 0
               , queue = qs
               , queueR = qR
               }
 
-reverseQueue :: Queue a -> Queue a
-reverseQueue = go Empty
-  where
-    go acc = \case
-      Empty -> acc
-      Queue x xs -> go (Queue x acc) xs
+    reverseQueue :: Queue a -> Queue a
+    reverseQueue = go Empty
+      where
+        go acc = \case
+          Empty -> acc
+          Queue x xs -> go (Queue x acc) xs

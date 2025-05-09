@@ -24,8 +24,9 @@ module Data.Pool
   , createPool
   ) where
 
-import Control.Concurrent
+import Control.Concurrent.STM
 import Control.Exception
+import Control.Monad
 import Data.Time (NominalDiffTime)
 
 import Data.Pool.Internal
@@ -63,17 +64,19 @@ withResource pool act = mask $ \unmask -> do
 takeResource :: Pool a -> IO (a, LocalPool a)
 takeResource pool = mask_ $ do
   lp <- getLocalPool (localPools pool)
-  stripe <- takeMVar (stripeVar lp)
-  if available stripe == 0
-    then do
-      q <- newEmptyMVar
-      putMVar (stripeVar lp) $! stripe {queueR = Queue q (queueR stripe)}
-      waitForResource (stripeVar lp) q >>= \case
-        Just a -> pure (a, lp)
-        Nothing -> do
-          a <- createResource (poolConfig pool) `onException` restoreSize (stripeVar lp)
-          pure (a, lp)
-    else takeAvailableResource pool lp stripe
+  join . atomically $ do
+    stripe <- readTVar (stripeVar lp)
+    if available stripe == 0
+      then do
+        q <- newEmptyTMVar
+        writeTVar (stripeVar lp) $! stripe {queueR = Queue q (queueR stripe)}
+        pure $
+          waitForResource (stripeVar lp) q >>= \case
+            Just a -> pure (a, lp)
+            Nothing -> do
+              a <- createResource (poolConfig pool) `onException` restoreSize (stripeVar lp)
+              pure (a, lp)
+      else takeAvailableResource pool lp stripe
 
 -- | A variant of 'withResource' that doesn't execute the action and returns
 -- 'Nothing' instead of blocking if the local pool is exhausted.
@@ -91,12 +94,13 @@ tryWithResource pool act = mask $ \unmask ->
 tryTakeResource :: Pool a -> IO (Maybe (a, LocalPool a))
 tryTakeResource pool = mask_ $ do
   lp <- getLocalPool (localPools pool)
-  stripe <- takeMVar (stripeVar lp)
-  if available stripe == 0
-    then do
-      putMVar (stripeVar lp) stripe
-      pure Nothing
-    else Just <$> takeAvailableResource pool lp stripe
+  join . atomically $ do
+    stripe <- readTVar (stripeVar lp)
+    if available stripe == 0
+      then do
+        writeTVar (stripeVar lp) stripe
+        pure $ pure Nothing
+      else fmap Just <$> takeAvailableResource pool lp stripe
 
 {-# DEPRECATED createPool "Use newPool instead" #-}
 
@@ -121,16 +125,17 @@ takeAvailableResource
   :: Pool a
   -> LocalPool a
   -> Stripe a
-  -> IO (a, LocalPool a)
+  -> STM (IO (a, LocalPool a))
 takeAvailableResource pool lp stripe = case cache stripe of
   [] -> do
-    putMVar (stripeVar lp) $! stripe {available = available stripe - 1}
-    a <- createResource (poolConfig pool) `onException` restoreSize (stripeVar lp)
-    pure (a, lp)
+    writeTVar (stripeVar lp) $! stripe {available = available stripe - 1}
+    pure $ do
+      a <- createResource (poolConfig pool) `onException` restoreSize (stripeVar lp)
+      pure (a, lp)
   Entry a _ : as -> do
-    putMVar (stripeVar lp) $!
+    writeTVar (stripeVar lp) $!
       stripe
         { available = available stripe - 1
         , cache = as
         }
-    pure (a, lp)
+    pure $ pure (a, lp)
