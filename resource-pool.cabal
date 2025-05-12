@@ -35,6 +35,7 @@ library
   build-depends: base >= 4.11 && < 5
                , hashable >= 1.1.0.0
                , primitive >= 0.7
+               , stm
                , time
 
   ghc-options: -Wall -Wcompat
@@ -44,4 +45,5 @@ library
   default-extensions: DeriveGeneric
                     , LambdaCase
                     , RankNTypes
+                    , ScopedTypeVariables
                     , TypeApplications
