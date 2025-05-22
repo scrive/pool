@@ -279,9 +279,10 @@ cleanStripe isStale free mstripe = mask_ $ do
     pure $ map entry stale
   -- We need to ignore exceptions in the 'free' function, otherwise if an
   -- exception is thrown half-way, we leak the rest of the resources. Also,
-  -- asynchronous exceptions need to be hard masked here since freeing a
-  -- resource might in theory block.
-  uninterruptibleMask_ . forM_ stale $ try @SomeException . free
+  -- asynchronous exceptions need to be hard masked here we need to run 'free'
+  -- for all resources.
+  uninterruptibleMask $ \release -> do
+    forM_ stale $ try @SomeException . release . free
 
 signal :: forall a. Stripe a -> Maybe a -> STM (Stripe a)
 signal stripe ma =
