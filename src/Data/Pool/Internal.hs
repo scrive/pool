@@ -183,7 +183,7 @@ destroyResource pool lp a = mask_ $ do
     stripe <- readTVar (stripeVar lp)
     newStripe <- signal stripe Nothing
     writeTVar (stripeVar lp) $! newStripe
-  void . try @SomeException $ freeResource (poolConfig pool) a
+  freeResource (poolConfig pool) a
 
 -- | Return a resource to the given 'LocalPool'.
 putResource :: LocalPool a -> a -> IO ()

@@ -3,6 +3,8 @@
   in a multi-threaded environment when number of stripes is not equal to the
   number of capabilities (in particular with a single stripe).
 * Stop running resource freeing functions within `uninterruptibleMask`.
+* `destroyResource` no longer ignores exceptions thrown from resource releasing
+  functions.
 
 # resource-pool-0.4.0.0 (2023-01-16)
 * Require `poolMaxResources` to be not smaller than the number of stripes.
