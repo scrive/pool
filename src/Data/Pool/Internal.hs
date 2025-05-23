@@ -10,6 +10,7 @@ import Control.Concurrent
 import Control.Concurrent.STM
 import Control.Exception
 import Control.Monad
+import Data.Either
 import Data.Hashable (hash)
 import Data.IORef
 import qualified Data.List as L
@@ -282,7 +283,15 @@ cleanStripe isStale free mstripe = mask_ $ do
   -- asynchronous exceptions need to be hard masked here we need to run 'free'
   -- for all resources.
   uninterruptibleMask $ \release -> do
-    forM_ stale $ try @SomeException . release . free
+    rs <- forM stale $ try @SomeException . release . free
+    -- If any async exception arrived in between, propagate it.
+    rethrowFirstAsyncException $ lefts rs
+  where
+    rethrowFirstAsyncException = \case
+      [] -> pure ()
+      e : es
+        | Just SomeAsyncException {} <- fromException e -> throwIO e
+        | otherwise -> rethrowFirstAsyncException es
 
 signal :: forall a. Stripe a -> Maybe a -> STM (Stripe a)
 signal stripe ma =
