@@ -1,4 +1,5 @@
 # resource-pool-0.5.0.0 (2025-??-??)
+* Drop support for GHC < 8.10.
 * Use STM based lockless implementation as it results in much better throughput
   in a multi-threaded environment when number of stripes is not equal to the
   number of capabilities (in particular with a single stripe).

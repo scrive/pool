@@ -39,7 +39,7 @@ data Resource a = Resource
   , acquisitionTime :: !Double
   , creationTime :: !(Maybe Double)
   }
-  deriving (Eq, Show, Generic)
+  deriving stock (Eq, Show, Generic)
 
 -- | Describes how a resource was acquired from the pool.
 data Acquisition
@@ -47,7 +47,7 @@ data Acquisition
     Immediate
   | -- | The thread had to wait until a resource was released.
     Delayed
-  deriving (Eq, Show, Generic)
+  deriving stock (Eq, Show, Generic)
 
 -- | 'Data.Pool.withResource' with introspection capabilities.
 withResource :: Pool a -> (Resource a -> IO r) -> IO r
