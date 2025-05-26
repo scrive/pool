@@ -32,17 +32,22 @@ library
                    Data.Pool.Internal
                    Data.Pool.Introspection
 
-  build-depends: base >= 4.11 && < 5
+  build-depends: base >= 4.14 && < 5
                , hashable >= 1.1.0.0
                , primitive >= 0.7
                , stm
                , time
 
-  ghc-options: -Wall -Wcompat
+  ghc-options:      -Wall
+                    -Wcompat
+                    -Wmissing-deriving-strategies
+                    -Werror=prepositive-qualified-module
 
   default-language: Haskell2010
 
   default-extensions: DeriveGeneric
+                    , DerivingStrategies
+                    , ImportQualifiedPost
                     , LambdaCase
                     , RankNTypes
                     , ScopedTypeVariables

@@ -13,7 +13,7 @@ import Control.Monad
 import Data.Either
 import Data.Hashable (hash)
 import Data.IORef
-import qualified Data.List as L
+import Data.List qualified as L
 import Data.Primitive.SmallArray
 import GHC.Clock (getMonotonicTime)
 import GHC.Conc (unsafeIOToSTM)
