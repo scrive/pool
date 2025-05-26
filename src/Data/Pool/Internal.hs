@@ -15,8 +15,9 @@ import Data.Hashable (hash)
 import Data.IORef
 import Data.List qualified as L
 import Data.Primitive.SmallArray
+import Data.Text qualified as T
 import GHC.Clock (getMonotonicTime)
-import GHC.Conc (unsafeIOToSTM)
+import GHC.Conc (labelThread, unsafeIOToSTM)
 
 -- | Striped resource pool based on "Control.Concurrent.QSem".
 data Pool a = Pool
@@ -60,6 +61,7 @@ data PoolConfig a = PoolConfig
   , poolCacheTTL :: !Double
   , poolMaxResources :: !Int
   , poolNumStripes :: !(Maybe Int)
+  , pcLabel :: !T.Text
   }
 
 -- | Create a 'PoolConfig' with optional parameters having default values.
@@ -94,6 +96,7 @@ defaultPoolConfig create free cacheTTL maxResources =
     , poolCacheTTL = cacheTTL
     , poolMaxResources = maxResources
     , poolNumStripes = Just 1
+    , pcLabel = T.empty
     }
 
 -- | Set the number of stripes (sub-pools) in the pool.
@@ -110,6 +113,15 @@ defaultPoolConfig create free cacheTTL maxResources =
 -- @since 0.4.0.0
 setNumStripes :: Maybe Int -> PoolConfig a -> PoolConfig a
 setNumStripes numStripes pc = pc {poolNumStripes = numStripes}
+
+-- | Assign a label to the pool.
+--
+-- The label will appear in a label of the collector thread as well as
+-- t'Data.Pool.Introspection.Resource'.
+--
+-- @since 0.5.0.0
+setPoolLabel :: T.Text -> PoolConfig a -> PoolConfig a
+setPoolLabel label pc = pc {pcLabel = label}
 
 -- | Create a new striped resource pool.
 --
@@ -149,7 +161,10 @@ newPool pc = do
         }
   mask_ $ do
     ref <- newIORef ()
-    collectorA <- forkIOWithUnmask $ \unmask -> unmask $ collector pools
+    collectorA <- forkIOWithUnmask $ \unmask -> unmask $ do
+      tid <- myThreadId
+      labelThread tid $ "resource-pool: collector (" ++ T.unpack (pcLabel pc) ++ ")"
+      collector pools
     void . mkWeakIORef ref $ do
       -- When the pool goes out of scope, stop the collector. Resources existing
       -- in stripes will be taken care by their cleaners.

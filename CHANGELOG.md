@@ -9,6 +9,7 @@
 * Change the default number of stripes to 1.
 * Do not exceed the maximum number of resources if the number of stripes does
   not divide it.
+* Add support for assigning a label to the pool.
 
 # resource-pool-0.4.0.0 (2023-01-16)
 * Require `poolMaxResources` to be not smaller than the number of stripes.

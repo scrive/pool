@@ -10,6 +10,7 @@ module Data.Pool
   , PoolConfig
   , defaultPoolConfig
   , setNumStripes
+  , setPoolLabel
 
     -- * Resource management
   , withResource
@@ -27,6 +28,7 @@ module Data.Pool
 import Control.Concurrent.STM
 import Control.Exception
 import Control.Monad
+import Data.Text qualified as T
 import Data.Time (NominalDiffTime)
 
 import Data.Pool.Internal
@@ -116,6 +118,7 @@ createPool create free numStripes idleTime maxResources =
       , poolCacheTTL = realToFrac idleTime
       , poolMaxResources = numStripes * maxResources
       , poolNumStripes = Just numStripes
+      , pcLabel = T.empty
       }
 
 ----------------------------------------
