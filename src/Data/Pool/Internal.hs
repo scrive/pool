@@ -81,13 +81,8 @@ defaultPoolConfig
   -- /Note:/ the elapsed time before destroying a resource may be a little
   -- longer than requested, as the collector thread wakes at 1-second intervals.
   -> Int
-  -- ^ The maximum number of resources to keep open __across all stripes__.
-  -- The smallest acceptable value is @1@ per stripe.
-  -- If you don't use 'setNumStripes' then set this to the amount of
-  -- capabilities (using 'GHC.Conc.numCapabilities').
-  -- If you don't do this your program might crash with "poolMaxResources
-  -- must not be smaller than numStripes",
-  -- especially if you move your program to a machine with bigger thread count.
+  -- ^ The maximum number of resources to keep open __across all stripes__. The
+  -- smallest acceptable value is @1@ per stripe.
   --
   -- /Note:/ for each stripe the number of resources is divided by the number of
   -- stripes and rounded up, hence the pool might end up creating up to @N - 1@
@@ -99,15 +94,19 @@ defaultPoolConfig create free cacheTTL maxResources =
     , freeResource = free
     , poolCacheTTL = cacheTTL
     , poolMaxResources = maxResources
-    , poolNumStripes = Nothing
+    , poolNumStripes = Just 1
     }
 
--- | Set the number of stripes in the pool.
+-- | Set the number of stripes (sub-pools) in the pool.
 --
--- If set to 'Nothing' (the default value), the pool will create the amount of
--- stripes equal to the number of capabilities. This ensures that threads never
--- compete over access to the same stripe and results in a very good performance
--- in a multi-threaded environment.
+-- If not explicitly set, the default amount of stripes is 1, which should be
+-- good for typical use (when in doubt, profile your application first).
+--
+-- If set to 'Nothing', the pool will create the amount of stripes equal to the
+-- number of capabilities.
+--
+-- /Note:/ usage of multiple stripes reduces contention, but can also result in
+-- suboptimal use of resources since stripes are separated from each other.
 --
 -- @since 0.4.0.0
 setNumStripes :: Maybe Int -> PoolConfig a -> PoolConfig a
