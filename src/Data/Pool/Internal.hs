@@ -75,7 +75,7 @@ defaultPoolConfig
   -> (a -> IO ())
   -- ^ The action that destroys an existing resource.
   -> Double
-  -- ^ The amount of seconds for which an unused resource is kept around. The
+  -- ^ The number of seconds for which an unused resource is kept around. The
   -- smallest acceptable value is @0.5@.
   --
   -- /Note:/ the elapsed time before destroying a resource may be a little
@@ -84,9 +84,8 @@ defaultPoolConfig
   -- ^ The maximum number of resources to keep open __across all stripes__. The
   -- smallest acceptable value is @1@ per stripe.
   --
-  -- /Note:/ for each stripe the number of resources is divided by the number of
-  -- stripes and rounded up, hence the pool might end up creating up to @N - 1@
-  -- resources more in total than specified, where @N@ is the number of stripes.
+  -- /Note:/ if the number of stripes does not divide the number of resources,
+  -- some of the stripes will have 1 more resource available than the others.
   -> PoolConfig a
 defaultPoolConfig create free cacheTTL maxResources =
   PoolConfig
@@ -99,10 +98,10 @@ defaultPoolConfig create free cacheTTL maxResources =
 
 -- | Set the number of stripes (sub-pools) in the pool.
 --
--- If not explicitly set, the default amount of stripes is 1, which should be
+-- If not explicitly set, the default number of stripes is 1, which should be
 -- good for typical use (when in doubt, profile your application first).
 --
--- If set to 'Nothing', the pool will create the amount of stripes equal to the
+-- If set to 'Nothing', the pool will create the number of stripes equal to the
 -- number of capabilities.
 --
 -- /Note:/ usage of multiple stripes reduces contention, but can also result in
@@ -129,12 +128,13 @@ newPool pc = do
     error "numStripes must be at least 1"
   when (poolMaxResources pc < numStripes) $ do
     error "poolMaxResources must not be smaller than numStripes"
-  pools <- fmap (smallArrayFromListN numStripes) . forM [1 .. numStripes] $ \n -> do
+  let mkArray = fmap (smallArrayFromListN numStripes)
+  pools <- mkArray . forM (stripeResources numStripes) $ \(n, resources) -> do
     ref <- newIORef ()
     stripe <-
       newTVarIO
         Stripe
-          { available = poolMaxResources pc `quotCeil` numStripes
+          { available = resources
           , cache = []
           , queue = Empty
           , queueR = Empty
@@ -161,10 +161,15 @@ newPool pc = do
         , reaperRef = ref
         }
   where
-    quotCeil :: Int -> Int -> Int
-    quotCeil x y =
-      -- Basically ceiling (x / y) without going through Double.
-      let (z, r) = x `quotRem` y in if r == 0 then z else z + 1
+    stripeResources :: Int -> [(Int, Int)]
+    stripeResources numStripes =
+      let (base, rest) = quotRem (poolMaxResources pc) numStripes
+      in  zip [1 .. numStripes] $ addRest (replicate numStripes base) rest
+      where
+        addRest [] = error "unreachable"
+        addRest acc@(r : rs) = \case
+          0 -> acc
+          rest -> r + 1 : addRest rs (rest - 1)
 
     -- Collect stale resources from the pool once per second.
     collector pools = forever $ do
