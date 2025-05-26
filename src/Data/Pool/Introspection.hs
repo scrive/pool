@@ -39,7 +39,7 @@ data Resource a = Resource
   , acquisitionTime :: !Double
   , creationTime :: !(Maybe Double)
   }
-  deriving stock (Eq, Show, Generic)
+  deriving stock (Eq, Generic, Show)
 
 -- | Describes how a resource was acquired from the pool.
 data Acquisition
@@ -47,7 +47,7 @@ data Acquisition
     Immediate
   | -- | The thread had to wait until a resource was released.
     Delayed
-  deriving stock (Eq, Show, Generic)
+  deriving stock (Eq, Generic, Show)
 
 -- | 'Data.Pool.withResource' with introspection capabilities.
 withResource :: Pool a -> (Resource a -> IO r) -> IO r
@@ -68,8 +68,8 @@ takeResource pool = mask_ $ do
       then do
         q <- newEmptyTMVar
         writeTVar (stripeVar lp) $! stripe {queueR = Queue q (queueR stripe)}
-        pure $
-          waitForResource (stripeVar lp) q >>= \case
+        pure
+          $ waitForResource (stripeVar lp) q >>= \case
             Just a -> do
               t2 <- getMonotonicTime
               let res =

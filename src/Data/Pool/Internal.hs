@@ -164,7 +164,7 @@ newPool pc = do
     stripeResources :: Int -> [(Int, Int)]
     stripeResources numStripes =
       let (base, rest) = quotRem (poolMaxResources pc) numStripes
-      in  zip [1 .. numStripes] $ addRest (replicate numStripes base) rest
+      in zip [1 .. numStripes] $ addRest (replicate numStripes base) rest
       where
         addRest [] = error "unreachable"
         addRest acc@(r : rs) = \case

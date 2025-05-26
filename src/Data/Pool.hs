@@ -70,8 +70,8 @@ takeResource pool = mask_ $ do
       then do
         q <- newEmptyTMVar
         writeTVar (stripeVar lp) $! stripe {queueR = Queue q (queueR stripe)}
-        pure $
-          waitForResource (stripeVar lp) q >>= \case
+        pure
+          $ waitForResource (stripeVar lp) q >>= \case
             Just a -> pure (a, lp)
             Nothing -> do
               a <- createResource (poolConfig pool) `onException` restoreSize (stripeVar lp)
@@ -133,8 +133,8 @@ takeAvailableResource pool lp stripe = case cache stripe of
       a <- createResource (poolConfig pool) `onException` restoreSize (stripeVar lp)
       pure (a, lp)
   Entry a _ : as -> do
-    writeTVar (stripeVar lp) $!
-      stripe
+    writeTVar (stripeVar lp)
+      $! stripe
         { available = available stripe - 1
         , cache = as
         }
