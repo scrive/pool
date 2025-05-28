@@ -9,6 +9,7 @@ module Data.Pool.Introspection
   , PoolConfig
   , defaultPoolConfig
   , setNumStripes
+  , setPoolLabel
 
     -- * Resource management
   , Resource (..)
@@ -25,6 +26,7 @@ module Data.Pool.Introspection
 import Control.Concurrent.STM
 import Control.Exception
 import Control.Monad
+import Data.Text qualified as T
 import GHC.Clock (getMonotonicTime)
 import GHC.Generics (Generic)
 
@@ -33,6 +35,7 @@ import Data.Pool.Internal
 -- | A resource taken from the pool along with additional information.
 data Resource a = Resource
   { resource :: a
+  , poolLabel :: !T.Text
   , stripeNumber :: !Int
   , availableResources :: !Int
   , acquisition :: !Acquisition
@@ -75,6 +78,7 @@ takeResource pool = mask_ $ do
               let res =
                     Resource
                       { resource = a
+                      , poolLabel = pcLabel $ poolConfig pool
                       , stripeNumber = stripeId lp
                       , availableResources = 0
                       , acquisition = Delayed
@@ -89,6 +93,7 @@ takeResource pool = mask_ $ do
               let res =
                     Resource
                       { resource = a
+                      , poolLabel = pcLabel $ poolConfig pool
                       , stripeNumber = stripeId lp
                       , availableResources = 0
                       , acquisition = Delayed
@@ -143,6 +148,7 @@ takeAvailableResource pool t1 lp stripe = case cache stripe of
       let res =
             Resource
               { resource = a
+              , poolLabel = pcLabel $ poolConfig pool
               , stripeNumber = stripeId lp
               , availableResources = newAvailable
               , acquisition = Immediate
@@ -158,6 +164,7 @@ takeAvailableResource pool t1 lp stripe = case cache stripe of
       let res =
             Resource
               { resource = a
+              , poolLabel = pcLabel $ poolConfig pool
               , stripeNumber = stripeId lp
               , availableResources = newAvailable
               , acquisition = Immediate

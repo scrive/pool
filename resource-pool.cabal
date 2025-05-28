@@ -36,6 +36,7 @@ library
                , hashable >= 1.1.0.0
                , primitive >= 0.7
                , stm
+               , text
                , time
 
   ghc-options:      -Wall
