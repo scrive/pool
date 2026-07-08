@@ -251,7 +251,9 @@ getLocalPool pools = do
         if stripes < capabilities && capabilities `rem` stripes /= 0
           then hash <$> myThreadId
           else fmap fst . threadCapability =<< myThreadId
-  pure $ pools `indexSmallArray` (sid `rem` stripes)
+  -- 'mod' is used instead of 'rem' since the hash of a thread id might be
+  -- negative, which would result in an out-of-bounds array access.
+  pure $ pools `indexSmallArray` (sid `mod` stripes)
   where
     stripes = sizeofSmallArray pools
 
