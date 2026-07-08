@@ -3,6 +3,8 @@
   indefinitely if resource creation failed in another thread.
 * Fix a potential out-of-bounds array access in stripe selection when the hash
   of a thread id is negative.
+* Fix a bug where some of the stripes would never be used if the number of
+  stripes was larger than the number of capabilities.
 
 # resource-pool-0.5.0.0 (2025-06-13)
 * Drop support for GHC < 8.10.

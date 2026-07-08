@@ -241,14 +241,22 @@ getLocalPool pools = do
         pure 0
       else do
         capabilities <- getNumCapabilities
-        -- If the number of stripes is smaller than the number of capabilities and
-        -- doesn't divide it, selecting a stripe by a capability the current
-        -- thread runs on wouldn't give equal load distribution across all stripes
-        -- (e.g. if there are 2 stripes and 3 capabilities, stripe 0 would be used
-        -- by capability 0 and 2, while stripe 1 would only be used by capability
-        -- 1, a 100% load difference). In such case we select based on the id of a
-        -- thread.
-        if stripes < capabilities && capabilities `rem` stripes /= 0
+        -- Selecting a stripe by a capability the current thread runs on gives
+        -- equal load distribution only if the number of stripes divides the
+        -- number of capabilities. Otherwise:
+        --
+        -- - If the number of stripes is smaller than the number of
+        --   capabilities, load distribution across all stripes wouldn't be
+        --   equal (e.g. if there are 2 stripes and 3 capabilities, stripe 0
+        --   would be used by capability 0 and 2, while stripe 1 would only be
+        --   used by capability 1, a 100% load difference).
+        --
+        -- - If the number of stripes is larger than the number of capabilities,
+        --   stripes with an id larger than the highest capability would never
+        --   be selected.
+        --
+        -- In such cases we select based on the id of a thread.
+        if capabilities `rem` stripes /= 0
           then hash <$> myThreadId
           else fmap fst . threadCapability =<< myThreadId
   -- 'mod' is used instead of 'rem' since the hash of a thread id might be
