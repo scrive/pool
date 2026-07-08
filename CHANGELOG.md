@@ -1,3 +1,7 @@
+# resource-pool-0.5.0.1 (2026-??-??)
+* Fix a bug where a thread waiting for a resource would get stuck in the queue
+  indefinitely if resource creation failed in another thread.
+
 # resource-pool-0.5.0.0 (2025-06-13)
 * Drop support for GHC < 8.10.
 * Use STM based lockless implementation as it results in much better throughput

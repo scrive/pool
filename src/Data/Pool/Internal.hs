@@ -279,7 +279,11 @@ waitForResource mstripe q = atomically (takeTMVar q) `onException` cleanup
 -- original size of the stripe.
 restoreSize :: TVar (Stripe a) -> IO ()
 restoreSize mstripe = atomically $ do
-  modifyTVar' mstripe $ \stripe -> stripe {available = available stripe + 1}
+  stripe <- readTVar mstripe
+  -- Signal needs to be called so that if there are threads waiting for a
+  -- resource, one of them wakes up and attempts the creation itself.
+  newStripe <- signal stripe Nothing
+  writeTVar mstripe $! newStripe
 
 -- | Free resource entries in the stripes that fulfil a given condition.
 cleanStripe
