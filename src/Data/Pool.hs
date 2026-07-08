@@ -99,9 +99,7 @@ tryTakeResource pool = mask_ $ do
   join . atomically $ do
     stripe <- readTVar (stripeVar lp)
     if available stripe == 0
-      then do
-        writeTVar (stripeVar lp) stripe
-        pure $ pure Nothing
+      then pure $ pure Nothing
       else fmap Just <$> takeAvailableResource pool lp stripe
 
 {-# DEPRECATED createPool "Use newPool instead" #-}
