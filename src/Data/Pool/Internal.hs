@@ -195,7 +195,8 @@ newPool pc = do
 
 -- | Destroy a resource.
 --
--- Note that this will ignore any exceptions in the destroy function.
+-- /Note:/ since version 0.5.0.0 exceptions thrown by the destroy function are
+-- no longer ignored.
 destroyResource :: Pool a -> LocalPool a -> a -> IO ()
 destroyResource pool lp a = mask_ $ do
   atomically $ do
