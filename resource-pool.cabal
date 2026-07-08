@@ -53,3 +53,33 @@ library
                     , RankNTypes
                     , ScopedTypeVariables
                     , TypeApplications
+
+test-suite test
+  type:            exitcode-stdio-1.0
+  hs-source-dirs:  test
+
+  main-is:         Main.hs
+
+  build-depends: base
+               , async
+               , resource-pool
+               , stm
+               , tasty
+               , tasty-hunit
+               , text
+
+  ghc-options:      -Wall
+                    -Wcompat
+                    -Wmissing-deriving-strategies
+                    -Werror=prepositive-qualified-module
+                    -threaded
+                    -rtsopts
+                    "-with-rtsopts=-N4"
+
+  default-language: Haskell2010
+
+  default-extensions: DerivingStrategies
+                    , ImportQualifiedPost
+                    , LambdaCase
+                    , ScopedTypeVariables
+                    , TypeApplications
