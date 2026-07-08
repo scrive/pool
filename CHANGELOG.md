@@ -1,4 +1,4 @@
-# resource-pool-0.5.0.1 (2026-??-??)
+# resource-pool-0.5.0.1 (2026-07-08)
 * Fix a bug where a thread waiting for a resource would get stuck in the queue
   indefinitely if resource creation failed in another thread.
 * Fix a potential out-of-bounds array access in stripe selection when the hash
