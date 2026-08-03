@@ -72,7 +72,7 @@ takeResource pool = mask_ $ do
         q <- newEmptyTMVar
         writeTVar (stripeVar lp) $! stripe {queueR = Queue q (queueR stripe)}
         pure
-          $ waitForResource (stripeVar lp) q >>= \case
+          $ waitForResource lp q >>= \case
             Just a -> do
               t2 <- getMonotonicTime
               let res =
@@ -88,7 +88,7 @@ takeResource pool = mask_ $ do
               pure (res, lp)
             Nothing -> do
               t2 <- getMonotonicTime
-              a <- createResource (poolConfig pool) `onException` restoreSize (stripeVar lp)
+              a <- createResource (poolConfig pool) `onException` restoreSize lp
               t3 <- getMonotonicTime
               let res =
                     Resource
@@ -141,7 +141,7 @@ takeAvailableResource pool t1 lp stripe = case cache stripe of
     writeTVar (stripeVar lp) $! stripe {available = newAvailable}
     pure $ do
       t2 <- getMonotonicTime
-      a <- createResource (poolConfig pool) `onException` restoreSize (stripeVar lp)
+      a <- createResource (poolConfig pool) `onException` restoreSize lp
       t3 <- getMonotonicTime
       let res =
             Resource

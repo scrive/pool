@@ -11,6 +11,7 @@ import Control.Concurrent.STM
 import Control.Exception
 import Control.Monad
 import Data.Either
+import Data.Function
 import Data.Hashable (hash)
 import Data.IORef
 import Data.List qualified as L
@@ -23,13 +24,13 @@ import GHC.Conc (labelThread, unsafeIOToSTM)
 data Pool a = Pool
   { poolConfig :: !(PoolConfig a)
   , localPools :: !(SmallArray (LocalPool a))
-  , reaperRef :: !(IORef ())
   }
 
 -- | A single, local pool.
 data LocalPool a = LocalPool
   { stripeId :: !Int
   , stripeVar :: !(TVar (Stripe a))
+  , wakeupSem :: !WakeupSem
   , cleanerRef :: !(IORef ())
   }
 
@@ -39,6 +40,7 @@ data LocalPool a = LocalPool
 data Stripe a = Stripe
   { available :: !Int
   , cache :: ![Entry a]
+  -- ^ Ordered by 'lastUsed', newest first (required by collector threads).
   , queue :: !(Queue a)
   , queueR :: !(Queue a)
   }
@@ -79,9 +81,6 @@ defaultPoolConfig
   -> Double
   -- ^ The number of seconds for which an unused resource is kept around. The
   -- smallest acceptable value is @0.5@.
-  --
-  -- /Note:/ the elapsed time before destroying a resource may be a little
-  -- longer than requested, as the collector thread wakes at 1-second intervals.
   -> Int
   -- ^ The maximum number of resources to keep open __across all stripes__. The
   -- smallest acceptable value is @1@ per stripe.
@@ -129,9 +128,10 @@ setPoolLabel label pc = pc {pcLabel = label}
 -- pool is garbage collected, it's recommended to manually call
 -- 'destroyAllResources' when you're done with the pool so that the resources
 -- are freed up as soon as possible.
-newPool :: PoolConfig a -> IO (Pool a)
+newPool :: forall a. PoolConfig a -> IO (Pool a)
 newPool pc = do
-  when (poolCacheTTL pc < 0.5) $ do
+  -- Arranged so that NaN is also rejected as it breaks the collector thread.
+  unless (poolCacheTTL pc >= 0.5) $ do
     error "poolCacheTTL must be at least 0.5"
   when (poolMaxResources pc < 1) $ do
     error "poolMaxResources must be at least 1"
@@ -151,30 +151,36 @@ newPool pc = do
           , queue = Empty
           , queueR = Empty
           }
-    -- When the local pool goes out of scope, free its resources.
-    void . mkWeakIORef ref $ cleanStripe (const True) (freeResource pc) stripe
+    sem <- newWakeupSem
+    mask_ $ do
+      -- The collector must not reference 'ref', otherwise the finalizer below
+      -- would never run.
+      collectorId <- forkIOWithUnmask $ \unmask -> unmask $ do
+        tid <- myThreadId
+        labelThread tid
+          $ "resource-pool: collector #"
+            ++ show n
+            ++ " ("
+            ++ T.unpack (pcLabel pc)
+            ++ ")"
+        collector sem stripe
+      void . mkWeakIORef ref $ do
+        -- When the local pool goes out of scope, stop its collector and free
+        -- its resources.
+        killThread collectorId
+        cleanStripe (const True) (freeResource pc) stripe
     pure
       LocalPool
         { stripeId = n
         , stripeVar = stripe
+        , wakeupSem = sem
         , cleanerRef = ref
         }
-  mask_ $ do
-    ref <- newIORef ()
-    collectorA <- forkIOWithUnmask $ \unmask -> unmask $ do
-      tid <- myThreadId
-      labelThread tid $ "resource-pool: collector (" ++ T.unpack (pcLabel pc) ++ ")"
-      collector pools
-    void . mkWeakIORef ref $ do
-      -- When the pool goes out of scope, stop the collector. Resources existing
-      -- in stripes will be taken care by their cleaners.
-      killThread collectorA
-    pure
-      Pool
-        { poolConfig = pc
-        , localPools = pools
-        , reaperRef = ref
-        }
+  pure
+    Pool
+      { poolConfig = pc
+      , localPools = pools
+      }
   where
     stripeResources :: Int -> [(Int, Int)]
     stripeResources numStripes =
@@ -186,12 +192,37 @@ newPool pc = do
           0 -> acc
           rest -> r + 1 : addRest rs (rest - 1)
 
-    -- Collect stale resources from the pool once per second.
-    collector pools = forever $ do
-      threadDelay 1000000
+    collector :: WakeupSem -> TVar (Stripe a) -> IO r
+    collector sem stripe = forever $ do
+      atomically $ wakeupWait sem
+      -- The wakeup signal means that a resource was just put into the empty
+      -- cache, so neither it nor any resource cached after it can expire
+      -- earlier than TTL from now.
+      --
+      -- Waiting a full TTL before looking at the cache also caps signal-driven
+      -- wakeups at one per TTL when resources are rapidly taken from and put
+      -- back into an almost-empty cache.
+      waitUntil . (+ poolCacheTTL pc) =<< getMonotonicTime
+      fix $ \loop ->
+        (cache <$> readTVarIO stripe) >>= \case
+          [] -> pure ()
+          entries -> do
+            -- Nothing can expire before the last entry.
+            waitUntil $ lastUsed (L.last entries) + poolCacheTTL pc
+            now <- getMonotonicTime
+            let isStale e = now - lastUsed e > poolCacheTTL pc
+            cleanStripe isStale (freeResource pc) stripe
+            loop
+
+    waitUntil :: Double -> IO ()
+    waitUntil deadline = do
       now <- getMonotonicTime
-      let isStale e = now - lastUsed e > poolCacheTTL pc
-      mapM_ (cleanStripe isStale (freeResource pc) . stripeVar) pools
+      let micros = (deadline - now) * 1000000
+      when (micros > 0) $ do
+        threadDelay
+          $ if micros >= fromIntegral (maxBound :: Int)
+            then maxBound
+            else ceiling micros
 
 -- | Destroy a resource.
 --
@@ -201,7 +232,7 @@ destroyResource :: Pool a -> LocalPool a -> a -> IO ()
 destroyResource pool lp a = mask_ $ do
   atomically $ do
     stripe <- readTVar (stripeVar lp)
-    newStripe <- signal stripe Nothing
+    newStripe <- signal lp stripe Nothing
     writeTVar (stripeVar lp) $! newStripe
   freeResource (poolConfig pool) a
 
@@ -209,7 +240,7 @@ destroyResource pool lp a = mask_ $ do
 putResource :: LocalPool a -> a -> IO ()
 putResource lp a = atomically $ do
   stripe <- readTVar (stripeVar lp)
-  newStripe <- signal stripe (Just a)
+  newStripe <- signal lp stripe (Just a)
   writeTVar (stripeVar lp) $! newStripe
 
 -- | Destroy all resources in all stripes in the pool.
@@ -232,6 +263,24 @@ destroyAllResources pool = forM_ (localPools pool) $ \lp -> do
 
 ----------------------------------------
 -- Helpers
+
+-- | Binary semaphore for signaling a collector thread to wake up.
+newtype WakeupSem = WakeupSem (TVar Bool)
+
+newWakeupSem :: IO WakeupSem
+newWakeupSem = WakeupSem <$> newTVarIO False
+
+wakeupSignal :: WakeupSem -> STM ()
+wakeupSignal (WakeupSem var) = writeTVar var True
+
+wakeupWait :: WakeupSem -> STM ()
+wakeupWait (WakeupSem var) = do
+  signaled <- readTVar var
+  if signaled
+    then writeTVar var False
+    else retry
+
+----------------------------------------
 
 -- | Get a local pool.
 getLocalPool :: SmallArray (LocalPool a) -> IO (LocalPool a)
@@ -267,34 +316,34 @@ getLocalPool pools = do
     stripes = sizeofSmallArray pools
 
 -- | Wait for the resource to be put into a given 'TMVar'.
-waitForResource :: TVar (Stripe a) -> TMVar (Maybe a) -> IO (Maybe a)
-waitForResource mstripe q = atomically (takeTMVar q) `onException` cleanup
+waitForResource :: LocalPool a -> TMVar (Maybe a) -> IO (Maybe a)
+waitForResource lp q = atomically (takeTMVar q) `onException` cleanup
   where
     cleanup = atomically $ do
-      stripe <- readTVar mstripe
+      stripe <- readTVar (stripeVar lp)
       newStripe <-
         tryTakeTMVar q >>= \case
           Just ma -> do
             -- Between entering the exception handler and taking ownership of
             -- the stripe we got the resource we wanted. We don't need it
             -- anymore though, so pass it to someone else.
-            signal stripe ma
+            signal lp stripe ma
           Nothing -> do
             -- If we're still waiting, fill up the TMVar with an undefined value
             -- so that 'signal' can discard our TMVar from the queue.
             putTMVar q $ error "unreachable"
             pure stripe
-      writeTVar mstripe $! newStripe
+      writeTVar (stripeVar lp) $! newStripe
 
 -- | If an exception is received while a resource is being created, restore the
 -- original size of the stripe.
-restoreSize :: TVar (Stripe a) -> IO ()
-restoreSize mstripe = atomically $ do
-  stripe <- readTVar mstripe
+restoreSize :: LocalPool a -> IO ()
+restoreSize lp = atomically $ do
+  stripe <- readTVar (stripeVar lp)
   -- Signal needs to be called so that if there are threads waiting for a
   -- resource, one of them wakes up and attempts the creation itself.
-  newStripe <- signal stripe Nothing
-  writeTVar mstripe $! newStripe
+  newStripe <- signal lp stripe Nothing
+  writeTVar (stripeVar lp) $! newStripe
 
 -- | Free resource entries in the stripes that fulfil a given condition.
 cleanStripe
@@ -327,14 +376,18 @@ cleanStripe isStale free mstripe = mask_ $ do
         | Just SomeAsyncException {} <- fromException e -> throwIO e
         | otherwise -> rethrowFirstAsyncException es
 
-signal :: forall a. Stripe a -> Maybe a -> STM (Stripe a)
-signal stripe ma =
+signal :: forall a. LocalPool a -> Stripe a -> Maybe a -> STM (Stripe a)
+signal lp stripe ma =
+  -- When cache changes from empty to non-empty, the collector needs to be
+  -- signaled via wakeupSem.
   if available stripe == 0
     then loop (queue stripe) (queueR stripe)
     else do
       newCache <- case ma of
         Just a -> do
           now <- unsafeIOToSTM getMonotonicTime
+          when (null $ cache stripe) $ do
+            wakeupSignal $ wakeupSem lp
           pure $ Entry a now : cache stripe
         Nothing -> pure $ cache stripe
       pure
@@ -348,6 +401,7 @@ signal stripe ma =
       newCache <- case ma of
         Just a -> do
           now <- unsafeIOToSTM getMonotonicTime
+          wakeupSignal $ wakeupSem lp
           pure [Entry a now]
         Nothing -> pure []
       pure
