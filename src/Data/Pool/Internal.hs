@@ -361,14 +361,15 @@ cleanStripe isStale free mstripe = mask_ $ do
     -- the number of resources taken from the pool.
     writeTVar mstripe $! stripe {cache = fresh}
     pure $ map entry stale
-  -- We need to ignore exceptions in the 'free' function, otherwise if an
-  -- exception is thrown half-way, we leak the rest of the resources. Also,
-  -- asynchronous exceptions need to be hard masked here we need to run 'free'
-  -- for all resources.
-  uninterruptibleMask $ \release -> do
-    rs <- forM stale $ try @SomeException . release . free
-    -- If any async exception arrived in between, propagate it.
-    rethrowFirstAsyncException $ lefts rs
+  -- We need to catch all exceptions in the 'free' function, otherwise if an
+  -- exception was thrown half-way through the traversal of 'stale', we would
+  -- leak the rest of the resources.
+  --
+  -- The loop outside of a call to 'free' is not interruptible, so asynchronous
+  -- exceptions can only be delivered inside 'free'. If such a situation arises,
+  -- propagate the first one we got.
+  rs <- forM stale $ try @SomeException . free
+  rethrowFirstAsyncException $ lefts rs
   where
     rethrowFirstAsyncException = \case
       [] -> pure ()
