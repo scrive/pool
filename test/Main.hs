@@ -39,6 +39,9 @@ configValidationTests =
     "config validation"
     [ testCase "rejects too small poolCacheTTL" $ do
         expectError . newPool $ poolConfig_ 0.4 1
+    , testCase "rejects a NaN poolCacheTTL" $ do
+        -- A NaN would send the collector into a busy loop.
+        expectError . newPool $ poolConfig_ (0 / 0) 1
     , testCase "rejects non-positive poolMaxResources" $ do
         expectError . newPool $ poolConfig_ 100 0
     , testCase "rejects non-positive number of stripes" $ do
@@ -131,9 +134,45 @@ basicTests =
               0.5
               5
         _ <- withResource pool pure
-        -- The collector thread wakes up every second.
+        -- The collector should free the resource promptly after its TTL
+        -- expires.
         waitUntil "the resource is collected" $ (== 1) <$> readIORef freedC
         readIORef createdC >>= assertEqual "created resources" 1
+    , testCase "the collector runs again after the cache is refilled" $ do
+        freedC <- newIORef (0 :: Int)
+        pool <-
+          newPool
+            $ defaultPoolConfig
+              (pure ())
+              (\_ -> atomicModifyIORef' freedC $ \n -> (n + 1, ()))
+              0.5
+              5
+        _ <- withResource pool pure
+        waitUntil "the first resource is collected" $ (== 1) <$> readIORef freedC
+        -- The collector went back to sleep on an empty cache; putting a new
+        -- resource into it needs to wake it up again.
+        _ <- withResource pool pure
+        waitUntil "the second resource is collected" $ (== 2) <$> readIORef freedC
+    , testCase "entries not yet stale in a collection round are collected later" $ do
+        freedC <- newIORef (0 :: Int)
+        pool <-
+          newPool
+            $ defaultPoolConfig
+              (pure ())
+              (\_ -> atomicModifyIORef' freedC $ \n -> (n + 1, ()))
+              0.5
+              5
+        (r1, lp1) <- takeResource pool
+        (r2, lp2) <- takeResource pool
+        putResource lp1 r1
+        -- Put the second resource back only after a while, so that when the
+        -- collector wakes up to free the first one, the second one is not yet
+        -- stale and has to be freed in a later collection round, even though
+        -- the pool sees no further activity.
+        threadDelay 300000
+        putResource lp2 r2
+        waitUntil "the first resource is collected" $ (>= 1) <$> readIORef freedC
+        waitUntil "the second resource is collected" $ (== 2) <$> readIORef freedC
     ]
 
 ----------------------------------------

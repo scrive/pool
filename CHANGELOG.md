@@ -1,3 +1,7 @@
+# resource-pool-0.5.1.0 (????-??-??)
+* Spawn a collector thread per stripe and make them wake up when appropriate
+  instead of polling every second.
+
 # resource-pool-0.5.0.1 (2026-07-08)
 * Fix a bug where a thread waiting for a resource would get stuck in the queue
   indefinitely if resource creation failed in another thread.
