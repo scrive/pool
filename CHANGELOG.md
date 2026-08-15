@@ -1,4 +1,4 @@
-# resource-pool-0.5.1.0 (????-??-??)
+# resource-pool-0.5.1.0 (2026-08-15)
 * Spawn a collector thread per stripe and make them wake up when appropriate
   instead of polling every second.
 
