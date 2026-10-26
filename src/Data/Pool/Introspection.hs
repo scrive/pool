@@ -10,10 +10,12 @@ module Data.Pool.Introspection
   , defaultPoolConfig
   , setNumStripes
   , setPoolLabel
+  , setAcquisitionTimeout
 
     -- * Resource management
   , Resource (..)
   , Acquisition (..)
+  , AcquisitionTimeout (..)
   , withResource
   , takeResource
   , tryWithResource
@@ -69,10 +71,9 @@ takeResource pool = mask_ $ do
     stripe <- readTVar (stripeVar lp)
     if available stripe == 0
       then do
-        q <- newEmptyTMVar
-        writeTVar (stripeVar lp) $! stripe {queueR = Queue q (queueR stripe)}
+        q <- enqueueWaiter lp stripe
         pure
-          $ waitForResource lp q >>= \case
+          $ waitForResource (poolConfig pool) lp q >>= \case
             Just a -> do
               t2 <- getMonotonicTime
               let res =

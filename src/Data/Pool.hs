@@ -11,8 +11,10 @@ module Data.Pool
   , defaultPoolConfig
   , setNumStripes
   , setPoolLabel
+  , setAcquisitionTimeout
 
     -- * Resource management
+  , AcquisitionTimeout (..)
   , withResource
   , takeResource
   , tryWithResource
@@ -70,10 +72,9 @@ takeResource pool = mask_ $ do
     stripe <- readTVar (stripeVar lp)
     if available stripe == 0
       then do
-        q <- newEmptyTMVar
-        writeTVar (stripeVar lp) $! stripe {queueR = Queue q (queueR stripe)}
+        q <- enqueueWaiter lp stripe
         pure
-          $ waitForResource lp q >>= \case
+          $ waitForResource (poolConfig pool) lp q >>= \case
             Just a -> pure (a, lp)
             Nothing -> do
               a <- createResource (poolConfig pool) `onException` restoreSize lp
@@ -117,6 +118,7 @@ createPool create free numStripes idleTime maxResources =
       , poolMaxResources = numStripes * maxResources
       , poolNumStripes = Just numStripes
       , pcLabel = T.empty
+      , poolAcquisitionTimeout = Nothing
       }
 
 ----------------------------------------

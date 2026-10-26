@@ -43,6 +43,10 @@ data Stripe a = Stripe
   -- ^ Ordered by 'lastUsed', newest first (required by collector threads).
   , queue :: !(Queue a)
   , queueR :: !(Queue a)
+  , waiting :: !Int
+  -- ^ Live entries in the queue.
+  , abandoned :: !Int
+  -- ^ Upper bound on dead entries in the queue (see 'compactQueue').
   }
 
 -- | An existing resource currently sitting in a pool.
@@ -64,13 +68,37 @@ data PoolConfig a = PoolConfig
   , poolMaxResources :: !Int
   , poolNumStripes :: !(Maybe Int)
   , pcLabel :: !T.Text
+  , poolAcquisitionTimeout :: !(Maybe Double)
   }
+
+-- | Thrown when no resource is released within the acquisition timeout (see
+-- 'setAcquisitionTimeout').
+--
+-- @since 0.5.2.0
+data AcquisitionTimeout = AcquisitionTimeout
+  { atPoolLabel :: !T.Text
+  -- ^ See 'setPoolLabel'.
+  , atTimeout :: !Double
+  -- ^ In seconds.
+  }
+  deriving stock (Eq, Show)
+
+instance Exception AcquisitionTimeout where
+  displayException e =
+    "resource-pool: no resource was released within "
+      ++ show (atTimeout e)
+      ++ " seconds"
+      ++ if T.null (atPoolLabel e)
+        then ""
+        else " (pool: " ++ T.unpack (atPoolLabel e) ++ ")"
 
 -- | Create a 'PoolConfig' with optional parameters having default values.
 --
 -- For setting optional parameters have a look at:
 --
 -- - 'setNumStripes'
+-- - 'setPoolLabel'
+-- - 'setAcquisitionTimeout'
 --
 -- @since 0.4.0.0
 defaultPoolConfig
@@ -96,6 +124,7 @@ defaultPoolConfig create free cacheTTL maxResources =
     , poolMaxResources = maxResources
     , poolNumStripes = Just 1
     , pcLabel = T.empty
+    , poolAcquisitionTimeout = Nothing
     }
 
 -- | Set the number of stripes (sub-pools) in the pool.
@@ -122,6 +151,16 @@ setNumStripes numStripes pc = pc {poolNumStripes = numStripes}
 setPoolLabel :: T.Text -> PoolConfig a -> PoolConfig a
 setPoolLabel label pc = pc {pcLabel = label}
 
+-- | Set the maximum number of seconds a thread waits for a resource when its
+-- stripe is exhausted, after which t'AcquisitionTimeout' is thrown. 'Nothing'
+-- (the default) waits indefinitely, @'Just' 0@ throws at once.
+--
+-- /Note:/ resource creation is not covered by the timeout.
+--
+-- @since 0.5.2.0
+setAcquisitionTimeout :: Maybe Double -> PoolConfig a -> PoolConfig a
+setAcquisitionTimeout timeout pc = pc {poolAcquisitionTimeout = timeout}
+
 -- | Create a new striped resource pool.
 --
 -- /Note:/ although the runtime system will destroy all idle resources when the
@@ -135,6 +174,10 @@ newPool pc = do
     error "poolCacheTTL must be at least 0.5"
   when (poolMaxResources pc < 1) $ do
     error "poolMaxResources must be at least 1"
+  forM_ (poolAcquisitionTimeout pc) $ \timeout -> do
+    -- Also rejects NaN.
+    unless (timeout >= 0) $ do
+      error "poolAcquisitionTimeout must be at least 0"
   numStripes <- maybe getNumCapabilities pure (poolNumStripes pc)
   when (numStripes < 1) $ do
     error "numStripes must be at least 1"
@@ -150,6 +193,8 @@ newPool pc = do
           , cache = []
           , queue = Empty
           , queueR = Empty
+          , waiting = 0
+          , abandoned = 0
           }
     sem <- newWakeupSem
     mask_ $ do
@@ -217,12 +262,9 @@ newPool pc = do
     waitUntil :: Double -> IO ()
     waitUntil deadline = do
       now <- getMonotonicTime
-      let micros = (deadline - now) * 1000000
-      when (micros > 0) $ do
-        threadDelay
-          $ if micros >= fromIntegral (maxBound :: Int)
-            then maxBound
-            else ceiling micros
+      let seconds = deadline - now
+      when (seconds > 0) $ do
+        threadDelay $ toMicroseconds seconds
 
 -- | Destroy a resource.
 --
@@ -316,9 +358,22 @@ getLocalPool pools = do
     stripes = sizeofSmallArray pools
 
 -- | Wait for the resource to be put into a given 'TMVar'.
-waitForResource :: LocalPool a -> TMVar (Maybe a) -> IO (Maybe a)
-waitForResource lp q = atomically (takeTMVar q) `onException` cleanup
+-- Throw t'AcquisitionTimeout' if the timeout elapses first.
+waitForResource :: PoolConfig a -> LocalPool a -> TMVar (Maybe a) -> IO (Maybe a)
+waitForResource pc lp q = wait `onException` cleanup
   where
+    wait = case poolAcquisitionTimeout pc of
+      Nothing -> atomically $ takeTMVar q
+      Just timeout -> withTimer (toMicroseconds timeout) $ \timer -> do
+        atomically $ do
+          takeTMVar q `orElse` do
+            check =<< readTVar timer
+            throwSTM
+              AcquisitionTimeout
+                { atPoolLabel = pcLabel pc
+                , atTimeout = timeout
+                }
+
     cleanup = atomically $ do
       stripe <- readTVar (stripeVar lp)
       newStripe <-
@@ -332,8 +387,69 @@ waitForResource lp q = atomically (takeTMVar q) `onException` cleanup
             -- If we're still waiting, fill up the TMVar with an undefined value
             -- so that 'signal' can discard our TMVar from the queue.
             putTMVar q $ error "unreachable"
-            pure stripe
+            compactQueue
+              stripe
+                { waiting = waiting stripe - 1
+                , abandoned = abandoned stripe + 1
+                }
       writeTVar (stripeVar lp) $! newStripe
+
+-- | Add a thread to the queue of waiting threads.
+enqueueWaiter :: LocalPool a -> Stripe a -> STM (TMVar (Maybe a))
+enqueueWaiter lp stripe = do
+  q <- newEmptyTMVar
+  writeTVar (stripeVar lp)
+    $! stripe
+      { queueR = Queue q (queueR stripe)
+      , waiting = waiting stripe + 1
+      }
+  pure q
+
+-- | Drop dead entries (of threads that stopped waiting because of an
+-- exception) once they may outnumber live ones. Otherwise the queue grows
+-- without limit while the stripe is exhausted. Amortized O(1).
+compactQueue :: Stripe a -> STM (Stripe a)
+compactQueue stripe
+  | abandoned stripe <= waiting stripe = pure stripe
+  | otherwise = do
+      newQueue <- removeAbandoned (queue stripe)
+      newQueueR <- removeAbandoned (queueR stripe)
+      pure
+        stripe
+          { queue = newQueue
+          , queueR = newQueueR
+          , abandoned = 0
+          }
+  where
+    removeAbandoned = \case
+      Empty -> pure Empty
+      Queue q qs -> do
+        rest <- removeAbandoned qs
+        waits <- isEmptyTMVar q
+        pure $ if waits then Queue q rest else rest
+
+-- | Run an action with a 'TVar' that becomes 'True' after a given number of
+-- microseconds. Unlike 'registerDelay', works in the non-threaded runtime and
+-- is cancelled.
+withTimer :: Int -> (TVar Bool -> IO r) -> IO r
+withTimer micros act = do
+  timer <- newTVarIO False
+  bracket
+    ( forkIOWithUnmask $ \unmask -> unmask $ do
+        threadDelay micros
+        atomically $ writeTVar timer True
+    )
+    -- Interrupting this would lose the resource 'waitForResource' just got.
+    (uninterruptibleMask_ . killThread)
+    (\_ -> act timer)
+
+-- | Convert seconds to microseconds, rounded up and capped at 'maxBound'.
+toMicroseconds :: Double -> Int
+toMicroseconds seconds
+  | micros >= fromIntegral (maxBound :: Int) = maxBound
+  | otherwise = ceiling micros
+  where
+    micros = seconds * 1000000
 
 -- | If an exception is received while a resource is being created, restore the
 -- original size of the stripe.
@@ -411,6 +527,8 @@ signal lp stripe ma =
           , cache = newCache
           , queue = Empty
           , queueR = Empty
+          , waiting = 0
+          , abandoned = 0
           }
     loop Empty qR = loop (reverseQueue qR) Empty
     loop (Queue q qs) qR =
@@ -425,6 +543,7 @@ signal lp stripe ma =
               { available = 0
               , queue = qs
               , queueR = qR
+              , waiting = waiting stripe - 1
               }
 
     reverseQueue :: Queue a -> Queue a

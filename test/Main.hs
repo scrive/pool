@@ -5,11 +5,13 @@ import Control.Concurrent.Async
 import Control.Concurrent.STM
 import Control.Exception
 import Control.Monad
+import Data.Either (isLeft)
 import Data.Foldable qualified as F
 import Data.IORef
 import Data.List qualified as L
 import Data.Maybe
 import Data.Text qualified as T
+import GHC.Clock (getMonotonicTime)
 import System.Timeout (timeout)
 import Test.Tasty hiding (withResource)
 import Test.Tasty.HUnit
@@ -26,6 +28,7 @@ main =
       [ configValidationTests
       , basicTests
       , concurrencyTests
+      , timeoutTests
       , introspectionTests
       , stressTests
       ]
@@ -48,6 +51,10 @@ configValidationTests =
         expectError . newPool . setNumStripes (Just 0) $ poolConfig_ 100 1
     , testCase "rejects poolMaxResources smaller than the number of stripes" $ do
         expectError . newPool . setNumStripes (Just 4) $ poolConfig_ 100 2
+    , testCase "rejects negative acquisition timeout" $ do
+        expectError . newPool . setAcquisitionTimeout (Just (-1)) $ poolConfig_ 100 1
+    , testCase "rejects a NaN acquisition timeout" $ do
+        expectError . newPool . setAcquisitionTimeout (Just (0 / 0)) $ poolConfig_ 100 1
     ]
   where
     poolConfig_ = defaultPoolConfig (pure ()) (\_ -> pure ())
@@ -228,6 +235,84 @@ concurrencyTests =
     ]
 
 ----------------------------------------
+-- Timeout tests
+
+timeoutTests :: TestTree
+timeoutTests =
+  testGroup
+    "acquisition timeout"
+    [ timesOut "takeResource" takeResource
+    , timesOut "Introspection.takeResource" I.takeResource
+    , testCase "displayException shows the timeout and the label" $ do
+        assertEqual "without a label"
+          "resource-pool: no resource was released within 0.5 seconds"
+          (displayException $ AcquisitionTimeout T.empty 0.5)
+        assertEqual "with a label"
+          "resource-pool: no resource was released within 0.5 seconds (pool: db)"
+          (displayException $ AcquisitionTimeout (T.pack "db") 0.5)
+    , testCase "a zero timeout fails immediately if the pool is exhausted" $ do
+        tp <- mkPoolWith (setAcquisitionTimeout (Just 0)) 1
+        (r, lp) <- takeResource (testPool tp)
+        mr <- timeout 5000000 . try @AcquisitionTimeout $ takeResource (testPool tp)
+        assertBool "the timeout exception is thrown" $ maybe False isLeft mr
+        putResource lp r
+    , testCase "a resource released before the timeout is received" $ do
+        tp <- mkPoolWith (setAcquisitionTimeout (Just 10)) 1
+        (r, lp) <- takeResource (testPool tp)
+        done <- newEmptyMVar
+        _ <- forkIO $ try @AcquisitionTimeout (withResource (testPool tp) pure) >>= putMVar done
+        waitUntil "the thread is queued"
+          $ any ((> 0) . queueLength) <$> stripeStates (testPool tp)
+        putResource lp r
+        mr <- timeout 5000000 $ takeMVar done
+        assertEqual "the returned resource is received" (Just (Right r)) mr
+    , testCase "the queue does not grow while waiters time out" $ do
+        tp <- mkPoolWith (setAcquisitionTimeout (Just 0.001)) 1
+        (r, lp) <- takeResource (testPool tp)
+        -- Sequentially.
+        replicateM_ 100 . try @AcquisitionTimeout $ takeResource (testPool tp)
+        totalQueued (testPool tp) >>= assertEqual "no entry is left in the queue" 0
+        -- Concurrently.
+        mapConcurrently_
+          (\_ -> try @AcquisitionTimeout $ takeResource (testPool tp))
+          [1 .. 100 :: Int]
+        totalQueued (testPool tp) >>= assertEqual "no entry is left in the queue" 0
+        putResource lp r
+        assertPoolIdle tp 1
+    , testCase "pool invariants hold when waiters time out under load" $ do
+        let maxResources = 4
+        tp <- mkPoolWith (setAcquisitionTimeout (Just 0.001)) maxResources
+        timeouts <- newIORef (0 :: Int)
+        mapConcurrently_
+          ( \_ -> replicateM_ 50 $ do
+              r <- try @AcquisitionTimeout $ do
+                withResource (testPool tp) $ \_ -> threadDelay 500
+              case r of
+                Left _ -> atomicModifyIORef' timeouts $ \n -> (n + 1, ())
+                Right () -> pure ()
+          )
+          [1 .. 30 :: Int]
+        n <- readIORef timeouts
+        assertBool ("some waiters timed out: " ++ show n) $ n > 0
+        assertPoolIdle tp maxResources
+    ]
+  where
+    timesOut :: String -> (Pool Int -> IO a) -> TestTree
+    timesOut name take_ = testCase (name ++ " throws when the timeout elapses") $ do
+      tp <- mkPoolWith (setPoolLabel (T.pack "label") . setAcquisitionTimeout (Just 0.1)) 1
+      (r, lp) <- takeResource (testPool tp)
+      t1 <- getMonotonicTime
+      mr <- timeout 5000000 . try @AcquisitionTimeout . void $ take_ (testPool tp)
+      t2 <- getMonotonicTime
+      assertEqual "the timeout exception is thrown"
+        (Just . Left $ AcquisitionTimeout (T.pack "label") 0.1)
+        mr
+      assertBool ("the exception is thrown after the timeout: " ++ show (t2 - t1))
+        $ t2 - t1 >= 0.1
+      putResource lp r
+      assertPoolIdle tp 1
+
+----------------------------------------
 -- Introspection tests
 
 introspectionTests :: TestTree
@@ -291,16 +376,7 @@ stressTests =
               Right () -> pure ()
         )
         [1 .. 30 :: Int]
-      -- Once the pool is idle again, all permits are available, all live
-      -- resources sit in stripe caches and no thread is queued.
-      ss <- stripeStates (testPool tp)
-      assertEqual "all permits are available" maxResources
-        $ sum (map available ss)
-      created <- readIORef (createdCount tp)
-      freed <- readIORef (freedCount tp)
-      assertEqual "all live resources are cached" (created - freed)
-        $ sum (map (length . cache) ss)
-      assertEqual "no thread is queued" 0 $ sum (map queueLength ss)
+      assertPoolIdle tp maxResources
 
 ----------------------------------------
 -- Helpers
@@ -339,6 +415,21 @@ mkPoolWith adjust maxResources = do
 
 stripeStates :: Pool a -> IO [Stripe a]
 stripeStates pool = mapM (readTVarIO . stripeVar) . F.toList $ localPools pool
+
+-- | All permits available, all live resources cached, no thread queued.
+assertPoolIdle :: TestPool -> Int -> Assertion
+assertPoolIdle tp maxResources = do
+  ss <- stripeStates (testPool tp)
+  assertEqual "all permits are available" maxResources
+    $ sum (map available ss)
+  created <- readIORef (createdCount tp)
+  freed <- readIORef (freedCount tp)
+  assertEqual "all live resources are cached" (created - freed)
+    $ sum (map (length . cache) ss)
+  assertEqual "no thread is queued" 0 $ sum (map queueLength ss)
+
+totalQueued :: Pool a -> IO Int
+totalQueued pool = sum . map queueLength <$> stripeStates pool
 
 queueLength :: Stripe a -> Int
 queueLength stripe = go (queue stripe) + go (queueR stripe)

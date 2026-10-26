@@ -1,3 +1,9 @@
+# resource-pool-0.5.2.0 (????-??-??)
+* Add `setAcquisitionTimeout` and `AcquisitionTimeout` to limit the time a
+  thread waits for a resource when the pool is exhausted.
+* Fix unbounded growth of the queue of waiting threads when threads stop
+  waiting because of an exception while the pool stays exhausted.
+
 # resource-pool-0.5.1.0 (2026-08-15)
 * Spawn a collector thread per stripe and make them wake up when appropriate
   instead of polling every second.
